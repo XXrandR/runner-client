@@ -47,7 +47,7 @@ public class App {
         // SERVER → RUNNER
         // ============================================================
 
-        StreamObserver<ServerResponse> responseObserver =
+        StreamObserver<ServerResponse> responseObserver = 
                 new StreamObserver<>() {
 
                     @Override
