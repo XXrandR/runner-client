@@ -1,0 +1,342 @@
+syntax = "proto3";
+
+package runner;
+
+option java_multiple_files = true;
+option java_package = "com.maximus.runner";
+
+message AuthenticateRequest {
+  string credential = 1;
+}
+
+message HandshakeRequest {
+  string runner_id = 1;
+  string runner_version = 2;
+  int32 protocol_version = 3;
+}
+
+message StatusUpdate {
+  RunnerStatus status = 1;
+}
+
+enum RunnerStatus {
+  RUNNER_STATUS_UNSPECIFIED = 0;
+  STARTING = 1;
+  READY = 2;
+  BUSY = 3;
+  STOPPING = 4;
+  ERROR = 5;
+}
+
+message HealthUpdate {
+  HealthStatus status = 1;
+  string runner_id = 2;
+}
+
+message HealthStatus {
+  Server server = 1;
+  Cpu cpu = 2;
+  Memory memory = 3;
+  repeated Disk disks = 4;
+  Network network = 5;
+  Load load = 6;
+  Process process = 7;
+
+  // ==========================================================================
+  // SERVER
+  // ==========================================================================
+  message Server {
+
+    // Machine hostname.
+    string hostname = 1;
+
+    // Operating system.
+    //
+    // Examples:
+    // Linux
+    // Windows Server
+    // Windows
+    string operating_system = 2;
+
+    // Operating system version.
+    string operating_system_version = 3;
+
+    // CPU architecture.
+    //
+    // Examples:
+    // amd64
+    // x86_64
+    // arm64
+    string architecture = 4;
+
+    // Number of logical processors.
+    int32 logical_processors = 5;
+
+    // Number of physical CPU cores.
+    optional int32 physical_cores = 6;
+
+    // Number of physical CPU sockets.
+    optional int32 cpu_sockets = 7;
+
+    // Server uptime in seconds.
+    int64 uptime_seconds = 8;
+
+    // Current machine time in ISO-8601 format.
+    string current_time = 9;
+
+    // Machine timezone.
+    //
+    // Example:
+    // America/Lima
+    string timezone = 10;
+  }
+
+
+  // ==========================================================================
+  // CPU
+  // ==========================================================================
+
+  message Cpu {
+
+    // Number of logical processors.
+    int32 logical_processors = 1;
+
+    // Number of physical cores.
+    optional int32 physical_cores = 2;
+
+    // Number of CPU sockets.
+    optional int32 sockets = 3;
+
+    // Current CPU usage percentage.
+    double usage_percentage = 4;
+
+    // System load average, when available.
+    optional double load_average = 5;
+
+    // Current CPU frequency in Hz.
+    optional int64 frequency_hz = 6;
+
+    // Maximum CPU frequency in Hz.
+    optional int64 max_frequency_hz = 7;
+
+    // CPU model.
+    optional string model = 8;
+
+    // CPU vendor.
+    optional string vendor = 9;
+  }
+
+
+  // ==========================================================================
+  // MEMORY
+  // ==========================================================================
+
+  message Memory {
+
+    // Total RAM in bytes.
+    int64 total_bytes = 1;
+
+    // Available RAM in bytes.
+    int64 available_bytes = 2;
+
+    // Used RAM in bytes.
+    int64 used_bytes = 3;
+
+    // RAM usage percentage.
+    double usage_percentage = 4;
+
+    // Total swap in bytes.
+    int64 swap_total_bytes = 5;
+
+    // Available swap in bytes.
+    int64 swap_available_bytes = 6;
+
+    // Used swap in bytes.
+    int64 swap_used_bytes = 7;
+
+    // Swap usage percentage.
+    double swap_usage_percentage = 8;
+  }
+
+
+  // ==========================================================================
+  // DISK
+  // ==========================================================================
+
+  message Disk {
+
+    // Device.
+    //
+    // Example:
+    // /dev/sda1
+    string device = 1;
+
+    // Mount point.
+    //
+    // Example:
+    // /
+    string mount_point = 2;
+
+    // File system.
+    //
+    // Example:
+    // ext4
+    string file_system = 3;
+
+    // Total capacity in bytes.
+    int64 total_bytes = 4;
+
+    // Used space in bytes.
+    int64 used_bytes = 5;
+
+    // Free space in bytes.
+    int64 free_bytes = 6;
+
+    // Disk usage percentage.
+    double usage_percentage = 7;
+
+    // Whether the disk is read-only.
+    bool read_only = 8;
+  }
+
+
+  // ==========================================================================
+  // NETWORK
+  // ==========================================================================
+
+  message Network {
+
+    // Total number of network interfaces.
+    int32 interface_count = 1;
+
+    // Number of active interfaces.
+    int32 active_interfaces = 2;
+
+    // Total received bytes.
+    int64 bytes_received = 3;
+
+    // Total transmitted bytes.
+    int64 bytes_transmitted = 4;
+
+    // Total received packets.
+    int64 packets_received = 5;
+
+    // Total transmitted packets.
+    int64 packets_transmitted = 6;
+
+    // Total receive errors.
+    int64 receive_errors = 7;
+
+    // Total transmit errors.
+    int64 transmit_errors = 8;
+
+    // Per-interface details.
+    repeated NetworkInterface interfaces = 9;
+  }
+
+
+  // ==========================================================================
+  // NETWORK INTERFACE
+  // ==========================================================================
+
+  message NetworkInterface {
+
+    // Interface name.
+    //
+    // Example:
+    // eth0
+    string name = 1;
+
+    // Human-readable interface name.
+    optional string display_name = 2;
+
+    // MAC address.
+    optional string mac_address = 3;
+
+    // Whether the interface is active.
+    bool active = 4;
+
+    // IP addresses assigned to the interface.
+    repeated string addresses = 5;
+
+    // Interface speed in bits per second.
+    optional int64 speed_bits_per_second = 6;
+
+    // Received bytes.
+    int64 bytes_received = 7;
+
+    // Transmitted bytes.
+    int64 bytes_transmitted = 8;
+
+    // Received packets.
+    int64 packets_received = 9;
+
+    // Transmitted packets.
+    int64 packets_transmitted = 10;
+
+    // Receive errors.
+    optional int64 receive_errors = 11;
+
+    // Transmit errors.
+    optional int64 transmit_errors = 12;
+
+    // Received packets dropped.
+    optional int64 receive_drops = 13;
+
+    // Transmitted packets dropped.
+    optional int64 transmit_drops = 14;
+  }
+
+
+  // ==========================================================================
+  // LOAD
+  // ==========================================================================
+
+  message Load {
+
+    // 1-minute load average.
+    optional double load_1_minute = 1;
+
+    // 5-minute load average.
+    optional double load_5_minutes = 2;
+
+    // 15-minute load average.
+    optional double load_15_minutes = 3;
+
+    // Currently running processes.
+    optional int32 running_processes = 4;
+
+    // Total processes.
+    optional int32 total_processes = 5;
+  }
+
+
+  // ==========================================================================
+  // PROCESS
+  // ==========================================================================
+
+  message Process {
+
+    // Total number of processes.
+    int32 process_count = 1;
+
+    // Total number of threads.
+    int32 thread_count = 2;
+
+    // System handles, mainly available on Windows.
+    optional int64 handle_count = 3;
+
+    // Total memory consumed by processes.
+    int64 total_memory_bytes = 4;
+
+    // Number of zombie processes.
+    optional int32 zombie_processes = 5;
+  }
+}
+
+message CommandResult {
+  string command_id = 1;
+  bool success = 2;
+  string payload = 3;
+  string error = 4;
+}

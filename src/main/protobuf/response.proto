@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package runner;
+
+option java_multiple_files = true;
+option java_package = "com.maximus.runner";
+
+message AuthenticationResponse {
+  bool accepted = 1;
+  AuthenticationFailureReason failure_reason = 2;
+}
+
+enum AuthenticationFailureReason {
+  AUTHENTICATION_FAILURE_REASON_UNSPECIFIED = 0;
+  INVALID_CREDENTIAL = 1;
+  CREDENTIAL_REVOKED = 2;
+  RUNNER_DISABLED = 3;
+}
+
+message HandshakeResponse {
+  bool accepted = 1;
+  string session_id = 2;
+  int32 protocol_version = 3;
+  int32 heartbeat_interval_seconds = 4;
+}
+
+message Command {
+  string command_id = 1;
+  string type = 2;
+  string payload = 3;
+}
+

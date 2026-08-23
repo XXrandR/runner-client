@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package runner;
+
+option java_multiple_files = true;
+option java_package = "com.maximus.runner";
+option java_outer_classname = "RunnerProto";
+
+import "request.proto";
+import "response.proto";
+
+// ============================================================================
+// RUNNER SERVICE
+// ============================================================================
+//
+// Runner (gRPC Client)
+//        │
+//        │ bidirectional stream
+//        ▼
+// API EXTERNOS (gRPC Server)
+//
+// Lifecycle:
+//
+// PROVISIONED
+//      ↓
+// DISCONNECTED
+//      ↓
+// AUTHENTICATING
+//      ↓
+// AUTHENTICATED
+//      ↓
+// HANDSHAKING
+//      ↓
+// ACTIVE
+//      ↓
+// DISCONNECTED
+//
+// The Runner is responsible for continuously reconnecting after
+// a connection failure.
+// ============================================================================
+
+service RunnerService {
+  rpc Connect(stream RunnerRequest) returns (stream ServerResponse);
+}
+
+
+// ============================================================================
+// RUNNER → SERVER
+// ============================================================================
+
+message RunnerRequest {
+
+  oneof payload {
+    AuthenticateRequest authenticate = 1;
+    HandshakeRequest handshake = 2;
+    Heartbeat heartbeat = 3;
+    StatusUpdate status = 4;
+    HealthUpdate health = 5;
+    CommandResult command_result = 6;
+  }
+}
+
+
+// ============================================================================
+// SERVER → RUNNER
+// ============================================================================
+
+message ServerResponse {
+
+  oneof payload {
+    AuthenticationResponse authentication = 1;
+    HandshakeResponse handshake = 2;
+    Heartbeat heartbeat = 3;
+    Command command = 4;
+  }
+}
+
+message Heartbeat {
+  int64 timestamp = 1;
+}
