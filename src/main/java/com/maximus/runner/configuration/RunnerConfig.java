@@ -1,8 +1,8 @@
-package com.maximus.runner.config;
+package com.maximus.runner.configuration;
 
 /**
  * Immutable runner configuration.
- * Values are constants for now; migrated from {@code App.java} where applicable.
+ * Values are constants for now; migrated from {@code RunnerApplication} where applicable.
  */
 public record RunnerConfig(
         String serverHost,

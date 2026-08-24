@@ -107,7 +107,7 @@
               <transformers>
                 <transformer />
                 <transformer>
-                  <mainClass>com.maximus.runner.App</mainClass>
+                  <mainClass>com.maximus.runner.RunnerApplication</mainClass>
                 </transformer>
               </transformers>
               <filters>

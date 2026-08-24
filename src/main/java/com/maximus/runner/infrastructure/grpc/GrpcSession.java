@@ -3,7 +3,8 @@ package com.maximus.runner.infrastructure.grpc;
 import com.maximus.runner.RunnerRequest;
 import com.maximus.runner.RunnerServiceGrpc;
 import com.maximus.runner.ServerResponse;
-import com.maximus.runner.config.RunnerConfig;
+import com.maximus.runner.application.port.RunnerConnection;
+import com.maximus.runner.configuration.RunnerConfig;
 import io.grpc.ConnectivityState;
 import io.grpc.ManagedChannel;
 import io.grpc.stub.StreamObserver;
@@ -13,7 +14,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
-public class GrpcSession {
+public class GrpcSession implements RunnerConnection {
 
     private static final long CHANNEL_READY_TIMEOUT_MS = 10_000;
 
@@ -27,7 +28,8 @@ public class GrpcSession {
         this.config = config;
     }
 
-    public void open(GrpcSessionListener listener) {
+    @Override
+    public void open(ConnectionListener listener) {
         channel = NettyChannelBuilder
                 .forAddress(config.serverHost(), config.serverPort())
                 .usePlaintext()
@@ -75,6 +77,7 @@ public class GrpcSession {
         System.out.println("[RUNNER] ✓ Connect() stream created");
     }
 
+    @Override
     public void send(RunnerRequest request) {
         synchronized (sendLock) {
             if (requestStream == null) {
@@ -103,6 +106,7 @@ public class GrpcSession {
         }
     }
 
+    @Override
     public void close() {
         completeRequestStream();
 

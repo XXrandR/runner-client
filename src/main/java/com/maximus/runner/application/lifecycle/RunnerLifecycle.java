@@ -1,49 +1,42 @@
-package com.maximus.runner.application;
+package com.maximus.runner.application.lifecycle;
 
 import com.maximus.runner.AuthenticateRequest;
 import com.maximus.runner.AuthenticationResponse;
-import com.maximus.runner.Command;
-import com.maximus.runner.CommandResult;
 import com.maximus.runner.HandshakeRequest;
 import com.maximus.runner.HandshakeResponse;
-import com.maximus.runner.Heartbeat;
-import com.maximus.runner.HealthUpdate;
 import com.maximus.runner.RunnerRequest;
-import com.maximus.runner.RunnerStatus;
 import com.maximus.runner.ServerResponse;
-import com.maximus.runner.StatusUpdate;
-import com.maximus.runner.config.RunnerConfig;
+import com.maximus.runner.application.port.RunnerConnection;
+import com.maximus.runner.configuration.RunnerConfig;
 import com.maximus.runner.domain.RunnerState;
 import com.maximus.runner.domain.RunnerStateMachine;
 import com.maximus.runner.domain.SessionContext;
 import com.maximus.runner.infrastructure.grpc.GrpcSession;
-import com.maximus.runner.infrastructure.grpc.GrpcSessionListener;
 import com.maximus.runner.infrastructure.grpc.GrpcSessionOpenException;
-import com.maximus.runner.infrastructure.health.SystemHealthCollector;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
-public class RunnerEngine implements GrpcSessionListener {
+public final class RunnerLifecycle implements RunnerConnection.ConnectionListener, LifecycleContext {
 
     private final RunnerConfig config;
     private final RunnerStateMachine stateMachine;
-    private final SystemHealthCollector healthCollector;
+    private final ReconnectPolicy reconnectPolicy;
+    private final ActiveSessionHandler activeSessionHandler;
     private final AtomicBoolean shutdown = new AtomicBoolean(false);
-    private final AtomicBoolean activeSessionRunning = new AtomicBoolean(false);
     private final Object lifecycleLock = new Object();
 
-    private GrpcSession grpcSession;
-    private SessionContext sessionContext;
-    private Thread activeSessionThread;
-    private long reconnectBackoffMs;
+    private RunnerConnection connection;
 
-    public RunnerEngine(RunnerConfig config) {
+    public RunnerLifecycle(RunnerConfig config, ActiveSessionHandler activeSessionHandler) {
         this.config = config;
         this.stateMachine = RunnerStateMachine.createWithLogging();
-        this.healthCollector = new SystemHealthCollector();
-        this.reconnectBackoffMs = config.initialReconnectDelayMs();
+        this.reconnectPolicy = new ReconnectPolicy(
+                config.initialReconnectDelayMs(),
+                config.maxReconnectDelayMs()
+        );
+        this.activeSessionHandler = activeSessionHandler;
     }
 
     public void run() {
@@ -53,7 +46,7 @@ public class RunnerEngine implements GrpcSessionListener {
 
             if (stateMachine.getState() == RunnerState.DISCONNECTED) {
 
-                if (!sleep(reconnectBackoffMs)) {
+                if (!sleep(reconnectPolicy.currentDelayMs())) {
                     break;
                 }
 
@@ -69,12 +62,24 @@ public class RunnerEngine implements GrpcSessionListener {
             }
         }
 
-        stopActiveSession();
+        activeSessionHandler.onSessionStopped();
     }
 
     public void shutdown() {
         shutdown.set(true);
         disconnect("shutdown");
+    }
+
+    public RunnerState getState() {
+        return stateMachine.getState();
+    }
+
+    public boolean isShutdown() {
+        return shutdown.get();
+    }
+
+    public Object lifecycleLock() {
+        return lifecycleLock;
     }
 
     private void attemptConnection() {
@@ -84,10 +89,10 @@ public class RunnerEngine implements GrpcSessionListener {
                 return;
             }
 
-            grpcSession = new GrpcSession(config);
+            connection = new GrpcSession(config);
 
             try {
-                grpcSession.open(this);
+                connection.open(this);
             } catch (GrpcSessionOpenException exception) {
 
                 System.out.println();
@@ -99,15 +104,15 @@ public class RunnerEngine implements GrpcSessionListener {
                                 : exception.getMessage())
                 );
 
-                grpcSession = null;
-                increaseReconnectBackoff();
+                connection = null;
+                reconnectPolicy.increase();
 
                 return;
             }
 
             stateMachine.transitionTo(RunnerState.AUTHENTICATING, "connect");
             sendAuthentication();
-            reconnectBackoffMs = config.initialReconnectDelayMs();
+            reconnectPolicy.reset();
         }
     }
 
@@ -116,7 +121,7 @@ public class RunnerEngine implements GrpcSessionListener {
                 .setCredential(config.credential())
                 .build();
 
-        grpcSession.send(
+        connection.send(
                 RunnerRequest.newBuilder()
                         .setAuthenticate(authenticateRequest)
                         .build()
@@ -132,7 +137,7 @@ public class RunnerEngine implements GrpcSessionListener {
                 .setProtocolVersion(config.protocolVersion())
                 .build();
 
-        grpcSession.send(
+        connection.send(
                 RunnerRequest.newBuilder()
                         .setHandshake(handshakeRequest)
                         .build()
@@ -154,7 +159,7 @@ public class RunnerEngine implements GrpcSessionListener {
             switch (currentState) {
                 case AUTHENTICATING -> handleAuthenticationResponse(response);
                 case HANDSHAKING -> handleHandshakeResponse(response);
-                case ACTIVE -> handleActiveResponse(response);
+                case ACTIVE -> activeSessionHandler.onActiveResponse(response);
                 default -> System.out.println(
                         "[RUNNER] ← Unexpected response in state "
                                 + currentState
@@ -205,217 +210,19 @@ public class RunnerEngine implements GrpcSessionListener {
 
         if (handshakeResponse.getAccepted()) {
 
-            sessionContext = new SessionContext(
+            SessionContext sessionContext = new SessionContext(
                     handshakeResponse.getSessionId(),
                     handshakeResponse.getHeartbeatIntervalSeconds(),
                     handshakeResponse.getProtocolVersion()
             );
 
             stateMachine.transitionTo(RunnerState.ACTIVE, "handshake accepted");
-            startActiveSession();
+            activeSessionHandler.onSessionStarted(sessionContext, connection);
 
         } else {
 
             disconnect("handshake rejected");
         }
-    }
-
-    private void handleActiveResponse(ServerResponse response) {
-
-        if (response.hasHeartbeat()) {
-
-            System.out.println(
-                    "[RUNNER] ← HEARTBEAT"
-                            + " | timestamp="
-                            + response.getHeartbeat().getTimestamp()
-            );
-
-        } else if (response.hasCommand()) {
-
-            handleCommand(response.getCommand());
-
-        } else {
-
-            System.out.println("[RUNNER] ← Unknown response payload");
-        }
-    }
-
-    private void handleCommand(Command command) {
-
-        System.out.println(
-                "[RUNNER] ← COMMAND"
-                        + " | id="
-                        + command.getCommandId()
-                        + " | type="
-                        + command.getType()
-        );
-
-        sendCommandResult(
-                command.getCommandId(),
-                false,
-                "",
-                "not implemented"
-        );
-    }
-
-    private void startActiveSession() {
-        stopActiveSession();
-
-        sendStatusUpdate(RunnerStatus.READY);
-
-        activeSessionRunning.set(true);
-        activeSessionThread = new Thread(
-                this::runActiveSessionLoop,
-                "runner-active-session"
-        );
-        activeSessionThread.start();
-
-        System.out.println("[RUNNER] Active session started");
-    }
-
-    private void runActiveSessionLoop() {
-        long intervalMs = resolveHeartbeatIntervalMs();
-
-        while (
-                activeSessionRunning.get()
-                        && !shutdown.get()
-                        && stateMachine.getState() == RunnerState.ACTIVE
-        ) {
-            try {
-                synchronized (lifecycleLock) {
-
-                    if (
-                            !activeSessionRunning.get()
-                                    || shutdown.get()
-                                    || stateMachine.getState() != RunnerState.ACTIVE
-                                    || grpcSession == null
-                    ) {
-                        break;
-                    }
-
-                    sendHeartbeat();
-                    sendStatusUpdate(RunnerStatus.READY);
-                    sendHealthUpdate();
-                }
-
-                if (!sleep(intervalMs)) {
-                    break;
-                }
-
-            } catch (Exception exception) {
-
-                System.out.println(
-                        "[RUNNER] ✗ Active session error: "
-                                + exception.getMessage()
-                );
-
-                synchronized (lifecycleLock) {
-                    disconnect("active session error");
-                }
-
-                break;
-            }
-        }
-    }
-
-    private void stopActiveSession() {
-        activeSessionRunning.set(false);
-
-        if (activeSessionThread != null) {
-            activeSessionThread.interrupt();
-
-            try {
-                activeSessionThread.join(5_000);
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-            }
-
-            activeSessionThread = null;
-        }
-    }
-
-    private long resolveHeartbeatIntervalMs() {
-        if (sessionContext != null && sessionContext.heartbeatIntervalSeconds() > 0) {
-            return sessionContext.heartbeatIntervalSeconds() * 1_000L;
-        }
-
-        return config.fallbackHeartbeatIntervalMs();
-    }
-
-    private void sendHeartbeat() {
-        long timestamp = System.currentTimeMillis();
-
-        Heartbeat heartbeat = Heartbeat.newBuilder()
-                .setTimestamp(timestamp)
-                .build();
-
-        grpcSession.send(
-                RunnerRequest.newBuilder()
-                        .setHeartbeat(heartbeat)
-                        .build()
-        );
-
-        System.out.println(
-                "[RUNNER] → HEARTBEAT sent | timestamp=" + timestamp
-        );
-    }
-
-    private void sendStatusUpdate(RunnerStatus runnerStatus) {
-        StatusUpdate statusUpdate = StatusUpdate.newBuilder()
-                .setStatus(runnerStatus)
-                .build();
-
-        grpcSession.send(
-                RunnerRequest.newBuilder()
-                        .setStatus(statusUpdate)
-                        .build()
-        );
-
-        System.out.println("[RUNNER] → STATUS sent | status=" + runnerStatus);
-    }
-
-    private void sendHealthUpdate() {
-        HealthUpdate healthUpdate = HealthUpdate.newBuilder()
-                .setRunnerId(config.runnerId())
-                .setStatus(healthCollector.collect())
-                .build();
-
-        grpcSession.send(
-                RunnerRequest.newBuilder()
-                        .setHealth(healthUpdate)
-                        .build()
-        );
-
-        System.out.println("[RUNNER] → HEALTH sent");
-    }
-
-    private void sendCommandResult(
-            String commandId,
-            boolean success,
-            String payload,
-            String error
-    ) {
-        CommandResult.Builder commandResult = CommandResult.newBuilder()
-                .setCommandId(commandId)
-                .setSuccess(success);
-
-        if (!payload.isEmpty()) {
-            commandResult.setPayload(payload);
-        }
-
-        if (!error.isEmpty()) {
-            commandResult.setError(error);
-        }
-
-        grpcSession.send(
-                RunnerRequest.newBuilder()
-                        .setCommandResult(commandResult.build())
-                        .build()
-        );
-
-        System.out.println(
-                "[RUNNER] → COMMAND_RESULT sent | id=" + commandId
-        );
     }
 
     @Override
@@ -440,34 +247,26 @@ public class RunnerEngine implements GrpcSessionListener {
         }
     }
 
-    private void disconnect(String reason) {
+    public void disconnect(String reason) {
 
         RunnerState currentState = stateMachine.getState();
 
-        stopActiveSession();
-        sessionContext = null;
-        closeSessionIfOpen();
+        activeSessionHandler.onSessionStopped();
+        closeConnectionIfOpen();
 
         if (currentState == RunnerState.DISCONNECTED) {
             return;
         }
 
         stateMachine.transitionTo(RunnerState.DISCONNECTED, reason);
-        increaseReconnectBackoff();
+        reconnectPolicy.increase();
     }
 
-    private void closeSessionIfOpen() {
-        if (grpcSession != null) {
-            grpcSession.close();
-            grpcSession = null;
+    private void closeConnectionIfOpen() {
+        if (connection != null) {
+            connection.close();
+            connection = null;
         }
-    }
-
-    private void increaseReconnectBackoff() {
-        reconnectBackoffMs = Math.min(
-                reconnectBackoffMs * 2,
-                config.maxReconnectDelayMs()
-        );
     }
 
     private void logStreamError(Throwable throwable) {

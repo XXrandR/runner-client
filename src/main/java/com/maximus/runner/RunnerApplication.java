@@ -1,9 +1,9 @@
 package com.maximus.runner;
 
-import com.maximus.runner.application.RunnerEngine;
-import com.maximus.runner.config.RunnerConfig;
+import com.maximus.runner.application.RunnerService;
+import com.maximus.runner.configuration.RunnerConfig;
 
-public class App {
+public class RunnerApplication {
 
     public static void main(String[] args) throws Exception {
 
@@ -19,15 +19,15 @@ public class App {
         );
         System.out.println("==================================================");
 
-        RunnerEngine runnerEngine = new RunnerEngine(config);
+        RunnerService.initialize(config);
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println();
             System.out.println("[RUNNER] Shutting down...");
-            runnerEngine.shutdown();
+            RunnerService.getInstance().shutdown();
         }));
 
-        runnerEngine.run();
+        RunnerService.getInstance().start();
 
         System.out.println("[RUNNER] Runner stopped");
     }

@@ -1,4 +1,4 @@
-package com.maximus.runner.infrastructure.health;
+package com.maximus.runner.application.monitoring.collector;
 
 import com.maximus.runner.HealthStatus;
 

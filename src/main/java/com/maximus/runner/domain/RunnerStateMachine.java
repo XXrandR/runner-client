@@ -54,8 +54,14 @@ public class RunnerStateMachine {
         RunnerState previousState = currentState;
         currentState = nextState;
 
+        StateTransition transition = new StateTransition(
+                previousState,
+                nextState,
+                reason
+        );
+
         for (StateTransitionListener listener : listeners) {
-            listener.onTransition(previousState, nextState, reason);
+            listener.onTransition(transition);
         }
     }
 
@@ -72,9 +78,15 @@ public class RunnerStateMachine {
                 new LoggingStateTransitionListener();
 
         @Override
-        public void onTransition(RunnerState from, RunnerState to, String reason) {
+        public void onTransition(StateTransition transition) {
             System.out.println(
-                    "[RUNNER][STATE] " + from + " → " + to + " (" + reason + ")"
+                    "[RUNNER][STATE] "
+                            + transition.from()
+                            + " → "
+                            + transition.to()
+                            + " ("
+                            + transition.reason()
+                            + ")"
             );
         }
     }
