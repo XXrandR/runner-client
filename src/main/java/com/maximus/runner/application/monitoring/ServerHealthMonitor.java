@@ -1,31 +1,22 @@
 package com.maximus.runner.application.monitoring;
 
 import com.maximus.runner.HealthUpdate;
-import com.maximus.runner.application.monitoring.collector.DatabaseHealthCollector;
-import com.maximus.runner.application.monitoring.collector.NetworkLatencyCollector;
-import com.maximus.runner.application.monitoring.collector.SystemHealthCollector;
+import com.maximus.runner.application.monitoring.collector.HealthCollectorsFacade;
 import com.maximus.runner.configuration.RunnerConfig;
 
+/**
+ * Adapter that maps aggregated health metrics to gRPC {@link HealthUpdate} payloads.
+ */
 public final class ServerHealthMonitor {
 
-    private final SystemHealthCollector systemHealthCollector;
-    private final DatabaseHealthCollector databaseHealthCollector;
-    private final NetworkLatencyCollector networkLatencyCollector;
+    private final HealthCollectorsFacade collectorsFacade;
 
     public ServerHealthMonitor(RunnerConfig config) {
-        this.systemHealthCollector = new SystemHealthCollector();
-        this.databaseHealthCollector = new DatabaseHealthCollector();
-        this.networkLatencyCollector = new NetworkLatencyCollector(config);
+        this.collectorsFacade = new HealthCollectorsFacade(config);
     }
 
     public ServerHealth collect() {
-        databaseHealthCollector.check();
-
-        return new ServerHealth(
-                systemHealthCollector.collect(),
-                databaseHealthCollector.isAvailable(),
-                networkLatencyCollector.measureLatencyMs()
-        );
+        return collectorsFacade.collect();
     }
 
     public HealthUpdate buildHealthUpdate(String runnerId) {

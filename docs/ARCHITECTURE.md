@@ -117,8 +117,9 @@ com.maximus.runner/
 │   │
 │   ├── monitoring/
 │   │   ├── ServerHealth.java
-│   │   ├── ServerHealthMonitor.java
+│   │   ├── ServerHealthMonitor.java          # Adapter → HealthUpdate gRPC
 │   │   └── collector/
+│   │       ├── HealthCollectorsFacade.java   # Facade — orquesta collectors
 │   │       ├── SystemHealthCollector.java
 │   │       ├── DatabaseHealthCollector.java   # stub
 │   │       └── NetworkLatencyCollector.java
@@ -151,6 +152,8 @@ Clases Java generadas en: `target/generated-sources/protobuf/java/`
 |--------|-------|-----------|
 | **Singleton** | `RunnerService` | Una instancia por JVM |
 | **Facade** | `RunnerService` | API simple: `start()` / `shutdown()` |
+| **Facade** | `HealthCollectorsFacade` | API única al subsistema de collectors |
+| **Adapter** | `ServerHealthMonitor` | `ServerHealth` → `HealthUpdate` gRPC |
 | **State Machine** | `RunnerStateMachine` | Transiciones del lifecycle validadas |
 | **Value Object** | `RunnerConfig`, `SessionContext`, `StateTransition`, `ServerHealth` | Datos inmutables |
 | **Port & Adapter** | `RunnerConnection` ← `GrpcSession` | Desacoplar lógica de gRPC |
@@ -269,7 +272,15 @@ Connect() stream
 - `send()` sincronizado, `close()` limpia stream y channel.
 
 ### `ServerHealthMonitor`
-- Orquesta collectors y produce `HealthUpdate`.
+- Adapter gRPC: delega recolección en `HealthCollectorsFacade` y construye `HealthUpdate`.
+- No conoce collectors concretos; solo expone `collect()` y `buildHealthUpdate(runnerId)`.
+
+### `HealthCollectorsFacade`
+- Facade del subsistema `collector/`.
+- Orquesta: `DatabaseHealthCollector.check()` → `SystemHealthCollector.collect()` → `NetworkLatencyCollector.measureLatencyMs()`.
+- Devuelve `ServerHealth` agregado (incluye `databaseAvailable` y `networkLatencyMs`; hoy solo `healthStatus` va al proto).
+
+### Collectors (subsistema)
 - `SystemHealthCollector`: CPU, RAM, disco, red, procesos (JMX).
 - `NetworkLatencyCollector`: latencia TCP al servidor.
 - `DatabaseHealthCollector`: **stub** — pendiente config JDBC.
