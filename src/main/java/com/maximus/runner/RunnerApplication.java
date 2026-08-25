@@ -2,12 +2,17 @@ package com.maximus.runner;
 
 import com.maximus.runner.application.RunnerService;
 import com.maximus.runner.configuration.RunnerConfig;
+import com.maximus.runner.configuration.RunnerConfigLoader;
 
 public class RunnerApplication {
 
     public static void main(String[] args) throws Exception {
 
-        RunnerConfig config = RunnerConfig.defaults();
+        System.out.println("==================================================");
+        System.out.println("[RUNNER] Configuración");
+        System.out.println("==================================================");
+
+        RunnerConfig config = RunnerConfigLoader.load(args);
 
         System.out.println("==================================================");
         System.out.println("[RUNNER] Starting Runner");

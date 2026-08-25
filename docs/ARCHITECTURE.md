@@ -11,11 +11,79 @@ Cliente Java que mantiene una sesión bidireccional con **API EXTERNOS** (servid
 ## Cómo ejecutar
 
 ```bash
-mvn package
-java -jar target/runner-1.0.0.jar
+mvn package -DskipTests
+java --enable-native-access=ALL-UNNAMED -jar target/runner-1.0.0.jar
 ```
 
 Entry point: `com.maximus.runner.RunnerApplication`
+
+La configuración se carga con `RunnerConfigLoader`: **host** y **puerto** son obligatorios; el resto es opcional y usa valores por defecto si no se indica.
+
+### Modo 1 — Argumentos en línea de comandos (recomendado)
+
+Host y puerto pueden ir como flags o como argumentos posicionales (en ese orden):
+
+```bash
+# Posicional: host y puerto
+java -jar target/runner-1.0.0.jar 45.55.104.90 9090
+
+# Flags explícitos
+java -jar target/runner-1.0.0.jar --host=45.55.104.90 --port=9090
+```
+
+Campos opcionales (todos aceptan `--clave=valor` o `--clave valor`):
+
+| Flag | Campo | Default |
+|------|-------|---------|
+| `--credential` | Credencial de autenticación | `runner-credential` |
+| `--runner-id` | Identificador del runner | `runner-1` |
+| `--runner-version` | Versión reportada en handshake | `1.0.0` |
+| `--protocol-version` | Versión de protocolo | `1` |
+| `--reconnect-initial-ms` | Backoff inicial de reconexión | `1000` |
+| `--reconnect-max-ms` | Backoff máximo de reconexión | `30000` |
+| `--heartbeat-interval-ms` | Intervalo de heartbeat (fallback) | `5000` |
+
+Ejemplo con opcionales:
+
+```bash
+java -jar target/runner-1.0.0.jar \
+  --host=45.55.104.90 \
+  --port=9090 \
+  --credential=mi-credencial \
+  --runner-id=runner-prod-1
+```
+
+Si pasas host y puerto por CLI, **no se muestran prompts** para esos campos. Los opcionales que falten tampoco piden entrada: se aplican los defaults.
+
+### Modo 2 — Consola interactiva
+
+Si no pasas host/puerto (o solo uno de los dos), el arranque pregunta por consola:
+
+```
+==================================================
+[RUNNER] Configuración
+==================================================
+Servidor (host) [requerido]: 45.55.104.90
+Puerto [requerido]: 9090
+Credencial [runner-credential]: 
+Runner ID [runner-1]: 
+Versión del runner [1.0.0]: 
+Versión de protocolo [1]: 
+Backoff inicial (ms) [1000]: 
+Backoff máximo (ms) [30000]: 
+Intervalo heartbeat (ms) [5000]: 
+```
+
+- Campos marcados `[requerido]`: deben tener valor; si están vacíos, se vuelve a pedir.
+- Campos con `[default]`: pulsa **Enter** para usar el valor entre corchetes.
+- Puedes mezclar: por ejemplo `--host=45.55.104.90` por CLI y el puerto se pide en consola.
+
+### Modo 3 — Desarrollo con Maven
+
+```bash
+mvn exec:java -Dexec.mainClass=com.maximus.runner.RunnerApplication \
+  -Dexec.args="45.55.104.90 9090"
+```
 
 ---
 
@@ -27,7 +95,8 @@ com.maximus.runner/
 ├── RunnerApplication.java          # main — arranca el Singleton
 │
 ├── configuration/
-│   └── RunnerConfig.java           # constantes de conexión y runner
+│   ├── RunnerConfig.java           # record inmutable de configuración
+│   └── RunnerConfigLoader.java     # carga desde CLI y/o consola interactiva
 │
 ├── domain/                         # reglas de negocio puras
 │   ├── RunnerState.java            # enum de estados del lifecycle
@@ -95,7 +164,7 @@ Clases Java generadas en: `target/generated-sources/protobuf/java/`
 ```
 RunnerApplication.main()
   │
-  ├─ RunnerConfig.defaults()
+  ├─ RunnerConfigLoader.load(args)
   ├─ RunnerService.initialize(config)
   ├─ shutdown hook → RunnerService.getInstance().shutdown()
   └─ RunnerService.getInstance().start()
@@ -213,19 +282,21 @@ Connect() stream
 
 ## Configuración
 
-`RunnerConfig.defaults()` en `configuration/RunnerConfig.java`:
+`RunnerConfig` (`configuration/RunnerConfig.java`) es un record inmutable. Los valores se cargan con `RunnerConfigLoader.load(args)`:
 
-| Campo | Valor actual | Notas |
-|-------|--------------|-------|
-| `serverHost` | `45.55.104.90` | IP del API EXTERNOS |
-| `serverPort` | `9090` | Puerto gRPC |
-| `credential` | `runner-credential` | Debe existir en servidor/MongoDB |
-| `runnerId` | `runner-1` | Identificador del runner |
-| `runnerVersion` | `1.0.0` | Versión reportada en handshake |
-| `protocolVersion` | `1` | Versión de protocolo |
-| `initialReconnectDelayMs` | `1_000` | Backoff inicial |
-| `maxReconnectDelayMs` | `30_000` | Backoff máximo |
-| `fallbackHeartbeatIntervalMs` | `5_000` | Si handshake no define intervalo |
+| Campo | Obligatorio | Default | Notas |
+|-------|-------------|---------|-------|
+| `serverHost` | **Sí** | — | IP o hostname del API EXTERNOS |
+| `serverPort` | **Sí** | — | Puerto gRPC (1–65535) |
+| `credential` | No | `runner-credential` | Debe existir en servidor/MongoDB |
+| `runnerId` | No | `runner-1` | Identificador del runner |
+| `runnerVersion` | No | `1.0.0` | Versión reportada en handshake |
+| `protocolVersion` | No | `1` | Versión de protocolo |
+| `initialReconnectDelayMs` | No | `1000` | Backoff inicial |
+| `maxReconnectDelayMs` | No | `30000` | Backoff máximo |
+| `fallbackHeartbeatIntervalMs` | No | `5000` | Si handshake no define intervalo |
+
+`RunnerConfig.defaults()` conserva los mismos valores por defecto y se usa internamente como base al cargar la config.
 
 ---
 
