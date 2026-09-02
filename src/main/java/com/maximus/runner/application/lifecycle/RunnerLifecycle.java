@@ -13,6 +13,7 @@ import com.maximus.runner.domain.RunnerStateMachine;
 import com.maximus.runner.domain.SessionContext;
 import com.maximus.runner.infrastructure.grpc.GrpcSession;
 import com.maximus.runner.infrastructure.grpc.GrpcSessionOpenException;
+import com.maximus.runner.security.RunnerHmacSigner;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 
@@ -117,8 +118,17 @@ public final class RunnerLifecycle implements RunnerConnection.ConnectionListene
     }
 
     private void sendAuthentication() {
+        long timestampEpochMs = System.currentTimeMillis();
+        String hmac = RunnerHmacSigner.sign(
+                config.key(),
+                config.credential(),
+                timestampEpochMs
+        );
+
         AuthenticateRequest authenticateRequest = AuthenticateRequest.newBuilder()
                 .setCredential(config.credential())
+                .setHmac(hmac)
+                .setTimestampEpochMs(timestampEpochMs)
                 .build();
 
         connection.send(

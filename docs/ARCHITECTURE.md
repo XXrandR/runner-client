@@ -36,6 +36,7 @@ Campos opcionales (todos aceptan `--clave=valor` o `--clave valor`):
 | Flag | Campo | Default |
 |------|-------|---------|
 | `--credential` | Credencial de autenticación | `runner-credential` |
+| `--key` | Key HMAC (se guarda en libsecret / Credential Manager) | — (obligatoria si no está guardada) |
 | `--runner-id` | Identificador del runner | `runner-1` |
 | `--runner-version` | Versión reportada en handshake | `1.0.0` |
 | `--protocol-version` | Versión de protocolo | `1` |
@@ -66,6 +67,7 @@ Si no pasas host/puerto (o solo uno de los dos), el arranque pregunta por consol
 Servidor (host) [requerido]: 45.55.104.90
 Puerto [requerido]: 9090
 Credencial [runner-credential]: 
+Key HMAC [requerido]: 
 Runner ID [runner-1]: 
 Versión del runner [1.0.0]: 
 Versión de protocolo [1]: 
@@ -96,7 +98,11 @@ com.maximus.runner/
 │
 ├── configuration/
 │   ├── RunnerConfig.java           # record inmutable de configuración
-│   └── RunnerConfigLoader.java     # carga desde CLI y/o consola interactiva
+│   ├── RunnerConfigLoader.java     # carga desde CLI y/o consola interactiva
+│   └── secret/                     # libsecret / Windows Credential Manager
+│
+├── security/
+│   └── RunnerHmacSigner.java       # HMAC-SHA256 enviado a externosapi
 │
 ├── domain/                         # reglas de negocio puras
 │   ├── RunnerState.java            # enum de estados del lifecycle
@@ -299,7 +305,8 @@ Connect() stream
 |-------|-------------|---------|-------|
 | `serverHost` | **Sí** | — | IP o hostname del API EXTERNOS |
 | `serverPort` | **Sí** | — | Puerto gRPC (1–65535) |
-| `credential` | No | `runner-credential` | Debe existir en servidor/MongoDB |
+| `credential` | No | `runner-credential` | Hash SHA-256 debe existir en `runner_credential` |
+| `key` | Sí, si no está en el almacén | — | Se guarda en libsecret / Credential Manager. Al API se envía HMAC, no la key |
 | `runnerId` | No | `runner-1` | Identificador del runner |
 | `runnerVersion` | No | `1.0.0` | Versión reportada en handshake |
 | `protocolVersion` | No | `1` | Versión de protocolo |

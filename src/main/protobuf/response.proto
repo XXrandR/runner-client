@@ -15,6 +15,7 @@ enum AuthenticationFailureReason {
   INVALID_CREDENTIAL = 1;
   CREDENTIAL_REVOKED = 2;
   RUNNER_DISABLED = 3;
+  INVALID_HMAC = 4;
 }
 
 message HandshakeResponse {

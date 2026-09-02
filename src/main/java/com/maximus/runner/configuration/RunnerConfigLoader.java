@@ -1,7 +1,12 @@
 package com.maximus.runner.configuration;
 
+import com.maximus.runner.configuration.secret.SecretStore;
+import com.maximus.runner.configuration.secret.SecretStores;
+
+import java.io.Console;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Scanner;
 
 /**
@@ -23,6 +28,7 @@ public final class RunnerConfigLoader {
             int port = resolveRequiredPort(options, interactive, scanner);
 
             String credential = resolveOptional(options, "credential", "Credencial", defaults.credential(), interactive, scanner);
+            String key = resolveKey(options, scanner);
             String runnerId = resolveOptional(options, "runner-id", "Runner ID", defaults.runnerId(), interactive, scanner);
             String runnerVersion = resolveOptional(options, "runner-version", "Versión del runner", defaults.runnerVersion(), interactive, scanner);
             int protocolVersion = resolveOptionalInt(options, "protocol-version", "Versión de protocolo", defaults.protocolVersion(), interactive, scanner);
@@ -37,6 +43,7 @@ public final class RunnerConfigLoader {
                     host,
                     port,
                     credential,
+                    key,
                     runnerId,
                     runnerVersion,
                     protocolVersion,
@@ -44,6 +51,50 @@ public final class RunnerConfigLoader {
                     maxReconnectDelayMs,
                     fallbackHeartbeatIntervalMs
             );
+        }
+    }
+
+    private static String resolveKey(Map<String, String> options, Scanner scanner) {
+        SecretStore store = SecretStores.create();
+        String fromCli = options.get("key");
+        if (fromCli != null && !fromCli.isBlank()) {
+            String key = fromCli.trim();
+            store.save(key);
+            System.out.println("[RUNNER] Key HMAC guardada en el almacén del sistema");
+            return key;
+        }
+
+        Optional<String> stored = store.load();
+        if (stored.isPresent()) {
+            System.out.println("[RUNNER] Key HMAC: usando almacén del sistema");
+            return stored.get();
+        }
+
+        String key = promptSecret("Key HMAC [requerido]", scanner);
+        store.save(key);
+        System.out.println("[RUNNER] Key HMAC guardada en el almacén del sistema");
+        return key;
+    }
+
+    private static String promptSecret(String label, Scanner scanner) {
+        Console console = System.console();
+        while (true) {
+            char[] entered = null;
+            String input;
+            if (console != null) {
+                entered = console.readPassword("%s: ", label);
+                input = entered == null ? "" : new String(entered).trim();
+            } else {
+                System.out.print(label + ": ");
+                input = scanner.nextLine().trim();
+            }
+            if (entered != null) {
+                java.util.Arrays.fill(entered, '\0');
+            }
+            if (!input.isEmpty()) {
+                return input;
+            }
+            System.out.println("[RUNNER] La key HMAC es obligatoria.");
         }
     }
 
