@@ -17,6 +17,11 @@ message HandshakeRequest {
   int32 protocol_version = 3;
 }
 
+// Response to the server challenge. The shared secret is never transmitted.
+message HandshakeProof {
+  bytes hmac = 1;
+}
+
 message StatusUpdate {
   RunnerStatus status = 1;
 }

@@ -57,6 +57,7 @@ message RunnerRequest {
     StatusUpdate status = 4;
     HealthUpdate health = 5;
     CommandResult command_result = 6;
+    HandshakeProof handshake_proof = 7;
   }
 }
 
@@ -72,6 +73,7 @@ message ServerResponse {
     HandshakeResponse handshake = 2;
     Heartbeat heartbeat = 3;
     Command command = 4;
+    HandshakeChallenge handshake_challenge = 5;
   }
 }
 

@@ -1,7 +1,10 @@
 package com.maximus.runner.application.lifecycle;
 
+import com.google.protobuf.ByteString;
 import com.maximus.runner.AuthenticateRequest;
 import com.maximus.runner.AuthenticationResponse;
+import com.maximus.runner.HandshakeChallenge;
+import com.maximus.runner.HandshakeProof;
 import com.maximus.runner.HandshakeRequest;
 import com.maximus.runner.HandshakeResponse;
 import com.maximus.runner.RunnerRequest;
@@ -17,9 +20,12 @@ import com.maximus.runner.security.RunnerHmacSigner;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class RunnerLifecycle implements RunnerConnection.ConnectionListener, LifecycleContext {
+
+    private static final int HANDSHAKE_NONCE_LENGTH_BYTES = 32;
 
     private final RunnerConfig config;
     private final RunnerStateMachine stateMachine;
@@ -146,15 +152,13 @@ public final class RunnerLifecycle implements RunnerConnection.ConnectionListene
                 .setRunnerVersion(config.runnerVersion())
                 .setProtocolVersion(config.protocolVersion())
                 .build();
+        stateMachine.transitionTo(RunnerState.HANDSHAKING, "handshake");
 
         connection.send(
                 RunnerRequest.newBuilder()
                         .setHandshake(handshakeRequest)
                         .build()
         );
-
-        stateMachine.transitionTo(RunnerState.HANDSHAKING, "handshake");
-
         System.out.println("[RUNNER] → HANDSHAKE sent");
     }
 
@@ -209,6 +213,11 @@ public final class RunnerLifecycle implements RunnerConnection.ConnectionListene
 
     private void handleHandshakeResponse(ServerResponse response) {
 
+        if (response.hasHandshakeChallenge()) {
+            handleHandshakeChallenge(response.getHandshakeChallenge());
+            return;
+        }
+
         if (!response.hasHandshake()) {
             System.out.println(
                     "[RUNNER] ← Unexpected response while HANDSHAKING"
@@ -234,6 +243,53 @@ public final class RunnerLifecycle implements RunnerConnection.ConnectionListene
             disconnect("handshake rejected");
         }
     }
+
+    private void handleHandshakeChallenge(HandshakeChallenge challenge) {
+        byte[] nonce = challenge.getNonce().toByteArray();
+
+        System.out.println("[RUNNER] ← HANDSHAKE_CHALLENGE received");
+
+        if (nonce.length != HANDSHAKE_NONCE_LENGTH_BYTES) {
+            disconnect("invalid handshake challenge: nonce must contain 32 bytes");
+            return;
+        }
+
+        if (challenge.getExpiresAtEpochMillis() <= System.currentTimeMillis()) {
+            Arrays.fill(nonce, (byte) 0);
+            disconnect("handshake challenge expired");
+            return;
+        }
+
+        byte[] hmac = null;
+
+        try {
+            hmac = RunnerHmacSigner.signNonce(config.key(), nonce);
+
+            HandshakeProof proof = HandshakeProof.newBuilder()
+                    .setHmac(ByteString.copyFrom(hmac))
+                    .build();
+
+            connection.send(
+                    RunnerRequest.newBuilder()
+                            .setHandshakeProof(proof)
+                            .build()
+            );
+
+            System.out.println("[RUNNER] → HANDSHAKE_PROOF sent");
+        } catch (IllegalArgumentException | IllegalStateException exception) {
+            System.out.println(
+                    "[RUNNER] ✗ Could not calculate handshake proof: "
+                            + exception.getMessage()
+            );
+            disconnect("handshake proof calculation failed");
+        } finally {
+            Arrays.fill(nonce, (byte) 0);
+            if (hmac != null) {
+                Arrays.fill(hmac, (byte) 0);
+            }
+        }
+    }
+
 
     @Override
     public void onError(Throwable throwable) {
