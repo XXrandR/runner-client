@@ -60,17 +60,18 @@
               <goal>exec</goal>
             </goals>
             <configuration>
+              <workingDirectory>${project.basedir}</workingDirectory>
               <executable>bash</executable>
               <arguments>
                 <argument>-c</argument>
-                <argument>mkdir -p ${project.build.directory}/generated-sources/protobuf/java &amp;&amp;
-                                    chmod +x ${project.build.directory}/tools/* &amp;&amp;
-                                    ${project.build.directory}/tools/protoc.exe \
-                                    --plugin=protoc-gen-grpc=${project.build.directory}/tools/protoc-gen-grpc-java.exe \
-                                    --java_out=${project.build.directory}/generated-sources/protobuf/java \
-                                    --grpc_out=${project.build.directory}/generated-sources/protobuf/java \
-                                    -I=${project.basedir}/src/main/protobuf \
-                                    ${project.basedir}/src/main/protobuf/*.proto</argument>
+                <argument>mkdir -p target/generated-sources/protobuf/java &amp;&amp;
+                                    chmod +x target/tools/* &amp;&amp;
+                                    target/tools/protoc.exe \
+                                    --plugin=protoc-gen-grpc=target/tools/protoc-gen-grpc-java.exe \
+                                    --java_out=target/generated-sources/protobuf/java \
+                                    --grpc_out=target/generated-sources/protobuf/java \
+                                    -I=src/main/protobuf \
+                                    src/main/protobuf/*.proto</argument>
               </arguments>
             </configuration>
           </execution>
