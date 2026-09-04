@@ -103,6 +103,10 @@
 
         <plugins>
 
+            <!--
+                Descarga automáticamente los ejecutables apropiados para el sistema operativo
+                detectado: windows-x86_64 en Windows y linux-x86_64 en Linux.
+            -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-dependency-plugin</artifactId>
@@ -137,37 +141,6 @@
                                     <destFileName>protoc-gen-grpc-java.exe</destFileName>
                                 </artifactItem>
                             </artifactItems>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-
-            <plugin>
-                <groupId>org.codehaus.mojo</groupId>
-                <artifactId>exec-maven-plugin</artifactId>
-                <version>3.1.1</version>
-                <executions>
-                    <execution>
-                        <id>generate-protobuf</id>
-                        <phase>generate-sources</phase>
-                        <goals>
-                            <goal>exec</goal>
-                        </goals>
-                        <configuration>
-                            <executable>bash</executable>
-                            <arguments>
-                                <argument>-c</argument>
-                                <argument>
-                                    mkdir -p ${project.build.directory}/generated-sources/protobuf/java &amp;&amp;
-                                    chmod +x ${project.build.directory}/tools/* &amp;&amp;
-                                    ${project.build.directory}/tools/protoc.exe \
-                                    --plugin=protoc-gen-grpc=${project.build.directory}/tools/protoc-gen-grpc-java.exe \
-                                    --java_out=${project.build.directory}/generated-sources/protobuf/java \
-                                    --grpc_out=${project.build.directory}/generated-sources/protobuf/java \
-                                    -I=${project.basedir}/src/main/protobuf \
-                                    ${project.basedir}/src/main/protobuf/*.proto
-                                </argument>
-                            </arguments>
                         </configuration>
                     </execution>
                 </executions>
@@ -226,5 +199,103 @@
 
         </plugins>
     </build>
+
+    <profiles>
+
+        <!--
+            Windows: Maven detecta Windows aunque el comando se lance desde MSYS2.
+            Se usan rutas relativas y barras / para que Bash no destruya las rutas
+            de Windows que contienen espacios o barras invertidas.
+        -->
+        <profile>
+            <id>protobuf-windows</id>
+            <activation>
+                <os>
+                    <family>Windows</family>
+                </os>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.1.1</version>
+                        <executions>
+                            <execution>
+                                <id>generate-protobuf-windows</id>
+                                <phase>generate-sources</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                    <executable>bash</executable>
+                                    <arguments>
+                                        <argument>-c</argument>
+                                        <argument>
+                                            mkdir -p target/generated-sources/protobuf/java &amp;&amp;
+                                            chmod +x target/tools/* &amp;&amp;
+                                            target/tools/protoc.exe \
+                                            --plugin=protoc-gen-grpc=target/tools/protoc-gen-grpc-java.exe \
+                                            --java_out=target/generated-sources/protobuf/java \
+                                            --grpc_out=target/generated-sources/protobuf/java \
+                                            -I=src/main/protobuf \
+                                            src/main/protobuf/*.proto
+                                        </argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- Linux: conserva la ejecución nativa mediante Bash. -->
+        <profile>
+            <id>protobuf-linux</id>
+            <activation>
+                <os>
+                    <name>Linux</name>
+                </os>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.1.1</version>
+                        <executions>
+                            <execution>
+                                <id>generate-protobuf-linux</id>
+                                <phase>generate-sources</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>bash</executable>
+                                    <arguments>
+                                        <argument>-c</argument>
+                                        <argument>
+                                            mkdir -p "${project.build.directory}/generated-sources/protobuf/java" &amp;&amp;
+                                            chmod +x "${project.build.directory}/tools/protoc.exe" \
+                                            "${project.build.directory}/tools/protoc-gen-grpc-java.exe" &amp;&amp;
+                                            "${project.build.directory}/tools/protoc.exe" \
+                                            --plugin=protoc-gen-grpc="${project.build.directory}/tools/protoc-gen-grpc-java.exe" \
+                                            --java_out="${project.build.directory}/generated-sources/protobuf/java" \
+                                            --grpc_out="${project.build.directory}/generated-sources/protobuf/java" \
+                                            -I="${project.basedir}/src/main/protobuf" \
+                                            "${project.basedir}"/src/main/protobuf/*.proto
+                                        </argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+    </profiles>
 
 </project>
