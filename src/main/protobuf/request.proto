@@ -7,8 +7,11 @@ option java_package = "com.maximus.runner";
 
 message AuthenticateRequest {
   string credential = 1;
-  string hmac = 2;
-  int64 timestamp_epoch_ms = 3;
+
+  // Campos retirados del antiguo HMAC de autenticación.
+  // El único HMAC ahora pertenece al handshake.
+  reserved 2, 3;
+  reserved "hmac", "timestamp_epoch_ms";
 }
 
 message HandshakeRequest {

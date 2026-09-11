@@ -124,18 +124,10 @@ public final class RunnerLifecycle implements RunnerConnection.ConnectionListene
     }
 
     private void sendAuthentication() {
-        long timestampEpochMs = System.currentTimeMillis();
-        String hmac = RunnerHmacSigner.sign(
-                config.key(),
-                config.credential(),
-                timestampEpochMs
-        );
-
-        AuthenticateRequest authenticateRequest = AuthenticateRequest.newBuilder()
-                .setCredential(config.credential())
-                .setHmac(hmac)
-                .setTimestampEpochMs(timestampEpochMs)
-                .build();
+        AuthenticateRequest authenticateRequest =
+                AuthenticateRequest.newBuilder()
+                        .setCredential(config.credential())
+                        .build();
 
         connection.send(
                 RunnerRequest.newBuilder()
