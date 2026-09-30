@@ -14,266 +14,255 @@ import com.maximus.runner.configuration.RunnerConfig;
 import com.maximus.runner.domain.RunnerState;
 import com.maximus.runner.domain.RunnerStateMachine;
 import com.maximus.runner.domain.SessionContext;
-import com.maximus.runner.infrastructure.grpc.GrpcSession;
-import com.maximus.runner.infrastructure.grpc.GrpcSessionOpenException;
+import com.maximus.runner.infrastructure.logging.RunnerLog;
 import com.maximus.runner.security.RunnerHmacSigner;
-import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 
 import java.util.Arrays;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
-public final class RunnerLifecycle implements RunnerConnection.ConnectionListener, LifecycleContext {
+/** Drives connect, authentication, challenge/response and reconnection. */
+public final class RunnerLifecycle implements LifecycleContext {
 
     private static final int HANDSHAKE_NONCE_LENGTH_BYTES = 32;
+    private static final long AUTHENTICATION_TIMEOUT_MS = 15_000;
+    private static final long HANDSHAKE_TIMEOUT_MS = 35_000;
 
     private final RunnerConfig config;
-    private final RunnerStateMachine stateMachine;
+    private final RunnerStateMachine stateMachine = RunnerStateMachine.createWithLogging();
     private final ReconnectPolicy reconnectPolicy;
     private final ActiveSessionHandler activeSessionHandler;
+    private final Supplier<? extends RunnerConnection> connectionFactory;
     private final AtomicBoolean shutdown = new AtomicBoolean(false);
     private final Object lifecycleLock = new Object();
 
     private RunnerConnection connection;
+    private long phaseStartedAtNanos;
 
-    public RunnerLifecycle(RunnerConfig config, ActiveSessionHandler activeSessionHandler) {
-        this.config = config;
-        this.stateMachine = RunnerStateMachine.createWithLogging();
+    public RunnerLifecycle(RunnerConfig config, ActiveSessionHandler activeSessionHandler,
+                           Supplier<? extends RunnerConnection> connectionFactory) {
+        this.config = Objects.requireNonNull(config, "config");
+        this.activeSessionHandler = Objects.requireNonNull(activeSessionHandler, "activeSessionHandler");
+        this.connectionFactory = Objects.requireNonNull(connectionFactory, "connectionFactory");
         this.reconnectPolicy = new ReconnectPolicy(
-                config.initialReconnectDelayMs(),
-                config.maxReconnectDelayMs()
-        );
-        this.activeSessionHandler = activeSessionHandler;
+                config.initialReconnectDelayMs(), config.maxReconnectDelayMs());
     }
 
     public void run() {
-        stateMachine.transitionTo(RunnerState.DISCONNECTED, "initialized");
-
-        while (!shutdown.get()) {
-
-            if (stateMachine.getState() == RunnerState.DISCONNECTED) {
-
-                if (!sleep(reconnectPolicy.currentDelayMs())) {
-                    break;
-                }
-
-                if (!shutdown.get()) {
-                    attemptConnection();
-                }
-
-            } else {
-
-                if (!sleep(100)) {
-                    break;
-                }
+        synchronized (lifecycleLock) {
+            if (stateMachine.getState() == RunnerState.PROVISIONED) {
+                stateMachine.transitionTo(RunnerState.DISCONNECTED, "initialized");
             }
         }
-
-        activeSessionHandler.onSessionStopped();
+        try {
+            while (!shutdown.get()) {
+                if (stateMachine.getState() == RunnerState.DISCONNECTED) {
+                    if (!sleep(reconnectPolicy.currentDelayMs())) {
+                        break;
+                    }
+                    if (!shutdown.get()) {
+                        attemptConnection();
+                    }
+                } else {
+                    checkPhaseTimeout();
+                    if (!sleep(100)) {
+                        break;
+                    }
+                }
+            }
+        } finally {
+            shutdown();
+        }
     }
 
     public void shutdown() {
         shutdown.set(true);
-        disconnect("shutdown");
+        synchronized (lifecycleLock) {
+            disconnectInternal("shutdown");
+        }
     }
 
+    @Override
     public RunnerState getState() {
         return stateMachine.getState();
     }
 
+    @Override
     public boolean isShutdown() {
         return shutdown.get();
     }
 
-    public Object lifecycleLock() {
-        return lifecycleLock;
-    }
-
-    private void attemptConnection() {
+    @Override
+    public void disconnect(RunnerConnection expectedConnection, String reason) {
         synchronized (lifecycleLock) {
-
-            if (stateMachine.getState() != RunnerState.DISCONNECTED) {
-                return;
+            if (expectedConnection == connection && expectedConnection != null) {
+                disconnectInternal(reason);
             }
-
-            connection = new GrpcSession(config);
-
-            try {
-                connection.open(this);
-            } catch (GrpcSessionOpenException exception) {
-
-                System.out.println();
-                System.out.println("[RUNNER] ✗ Failed to create Connect() stream");
-                System.out.println(
-                        "[RUNNER] Error: "
-                                + (exception.getCause() != null
-                                ? exception.getCause().getMessage()
-                                : exception.getMessage())
-                );
-
-                connection = null;
-                reconnectPolicy.increase();
-
-                return;
-            }
-
-            stateMachine.transitionTo(RunnerState.AUTHENTICATING, "connect");
-            sendAuthentication();
-            reconnectPolicy.reset();
         }
     }
 
-    private void sendAuthentication() {
-        AuthenticateRequest authenticateRequest =
-                AuthenticateRequest.newBuilder()
-                        .setCredential(config.credential())
-                        .build();
+    private void attemptConnection() {
+        RunnerConnection candidate;
+        synchronized (lifecycleLock) {
+            if (shutdown.get() || stateMachine.getState() != RunnerState.DISCONNECTED) {
+                return;
+            }
+            try {
+                candidate = Objects.requireNonNull(connectionFactory.get(), "connectionFactory result");
+            } catch (RuntimeException exception) {
+                RunnerLog.error("Could not create connection", exception);
+                reconnectPolicy.increase();
+                return;
+            }
+            connection = candidate;
+        }
 
-        connection.send(
-                RunnerRequest.newBuilder()
-                        .setAuthenticate(authenticateRequest)
-                        .build()
-        );
+        // Connecting can take up to ten seconds. Shutdown and callbacks must not wait on that IO.
+        try {
+            candidate.open(new AttemptListener(candidate));
+        } catch (RuntimeException exception) {
+            synchronized (lifecycleLock) {
+                if (connection == candidate) {
+                    RunnerLog.error("Connection attempt failed", exception);
+                    disconnectInternal("connection attempt failed");
+                }
+            }
+            return;
+        }
 
-        System.out.println("[RUNNER] → AUTHENTICATE sent");
+        synchronized (lifecycleLock) {
+            if (shutdown.get() || connection != candidate) {
+                // A callback or shutdown already closed this attempt during open().
+                return;
+            }
+            try {
+                stateMachine.transitionTo(RunnerState.AUTHENTICATING, "connect");
+                phaseStartedAtNanos = System.nanoTime();
+                sendAuthentication(candidate);
+            } catch (RuntimeException exception) {
+                if (connection == candidate) {
+                    RunnerLog.error("Connection attempt failed", exception);
+                    disconnectInternal("connection attempt failed");
+                }
+            }
+        }
     }
 
-    private void sendHandshake() {
-        HandshakeRequest handshakeRequest = HandshakeRequest.newBuilder()
+    private void sendAuthentication(RunnerConnection candidate) {
+        AuthenticateRequest request = AuthenticateRequest.newBuilder()
+                .setCredential(config.credential()).build();
+        candidate.send(RunnerRequest.newBuilder().setAuthenticate(request).build());
+        RunnerLog.info("AUTHENTICATE sent");
+    }
+
+    private void sendHandshake(RunnerConnection candidate) {
+        HandshakeRequest request = HandshakeRequest.newBuilder()
                 .setRunnerId(config.runnerId())
                 .setRunnerVersion(config.runnerVersion())
                 .setProtocolVersion(config.protocolVersion())
                 .build();
         stateMachine.transitionTo(RunnerState.HANDSHAKING, "handshake");
-
-        connection.send(
-                RunnerRequest.newBuilder()
-                        .setHandshake(handshakeRequest)
-                        .build()
-        );
-        System.out.println("[RUNNER] → HANDSHAKE sent");
+        phaseStartedAtNanos = System.nanoTime();
+        candidate.send(RunnerRequest.newBuilder().setHandshake(request).build());
+        RunnerLog.info("HANDSHAKE sent");
     }
 
-    @Override
-    public void onResponse(ServerResponse response) {
+    private void checkPhaseTimeout() {
         synchronized (lifecycleLock) {
-
-            System.out.println("[RUNNER] ← Response received");
-
-            RunnerState currentState = stateMachine.getState();
-
-            switch (currentState) {
-                case AUTHENTICATING -> handleAuthenticationResponse(response);
-                case HANDSHAKING -> handleHandshakeResponse(response);
-                case ACTIVE -> activeSessionHandler.onActiveResponse(response);
-                default -> System.out.println(
-                        "[RUNNER] ← Unexpected response in state "
-                                + currentState
-                );
+            RunnerState state = stateMachine.getState();
+            long limitMs = switch (state) {
+                case AUTHENTICATING -> AUTHENTICATION_TIMEOUT_MS;
+                case HANDSHAKING -> HANDSHAKE_TIMEOUT_MS;
+                default -> 0;
+            };
+            if (limitMs > 0 && System.nanoTime() - phaseStartedAtNanos
+                    >= java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(limitMs)) {
+                RunnerLog.warning(state + " timed out");
+                disconnectInternal(state + " timed out");
             }
         }
     }
 
-    private void handleAuthenticationResponse(ServerResponse response) {
+    private void handleResponse(RunnerConnection candidate, ServerResponse response) {
+        synchronized (lifecycleLock) {
+            if (candidate != connection || shutdown.get()) {
+                return; // Response from a previous, already closed stream.
+            }
+            try {
+                switch (stateMachine.getState()) {
+                    case AUTHENTICATING -> handleAuthenticationResponse(candidate, response);
+                    case HANDSHAKING -> handleHandshakeResponse(candidate, response);
+                    case ACTIVE -> activeSessionHandler.onActiveResponse(response);
+                    default -> RunnerLog.warning("Unexpected response in state " + stateMachine.getState());
+                }
+            } catch (RuntimeException exception) {
+                RunnerLog.error("Could not process server response", exception);
+                disconnectInternal("response processing failed");
+            }
+        }
+    }
 
+    private void handleAuthenticationResponse(RunnerConnection candidate, ServerResponse response) {
         if (!response.hasAuthentication()) {
-            System.out.println(
-                    "[RUNNER] ← Unexpected response while AUTHENTICATING"
-            );
+            RunnerLog.warning("Unexpected response while AUTHENTICATING");
             return;
         }
-
-        AuthenticationResponse authenticationResponse =
-                response.getAuthentication();
-
-        if (authenticationResponse.getAccepted()) {
-
-            stateMachine.transitionTo(
-                    RunnerState.AUTHENTICATED,
-                    "authentication accepted"
-            );
-            sendHandshake();
-
+        AuthenticationResponse authentication = response.getAuthentication();
+        if (authentication.getAccepted()) {
+            stateMachine.transitionTo(RunnerState.AUTHENTICATED, "authentication accepted");
+            sendHandshake(candidate);
         } else {
-
-            disconnect(
-                    "authentication rejected: "
-                            + authenticationResponse.getFailureReason()
-            );
+            disconnectInternal("authentication rejected: " + authentication.getFailureReason());
         }
     }
 
-    private void handleHandshakeResponse(ServerResponse response) {
-
+    private void handleHandshakeResponse(RunnerConnection candidate, ServerResponse response) {
         if (response.hasHandshakeChallenge()) {
-            handleHandshakeChallenge(response.getHandshakeChallenge());
+            handleHandshakeChallenge(candidate, response.getHandshakeChallenge());
             return;
         }
-
         if (!response.hasHandshake()) {
-            System.out.println(
-                    "[RUNNER] ← Unexpected response while HANDSHAKING"
-            );
+            RunnerLog.warning("Unexpected response while HANDSHAKING");
             return;
         }
-
-        HandshakeResponse handshakeResponse = response.getHandshake();
-
-        if (handshakeResponse.getAccepted()) {
-
-            SessionContext sessionContext = new SessionContext(
-                    handshakeResponse.getSessionId(),
-                    handshakeResponse.getHeartbeatIntervalSeconds(),
-                    handshakeResponse.getProtocolVersion()
-            );
-
-            stateMachine.transitionTo(RunnerState.ACTIVE, "handshake accepted");
-            activeSessionHandler.onSessionStarted(sessionContext, connection);
-
-        } else {
-
-            disconnect("handshake rejected");
+        HandshakeResponse handshake = response.getHandshake();
+        if (!handshake.getAccepted()) {
+            disconnectInternal("handshake rejected");
+            return;
         }
+        SessionContext context = new SessionContext(
+                handshake.getSessionId(),
+                handshake.getHeartbeatIntervalSeconds(),
+                handshake.getProtocolVersion());
+        reconnectPolicy.reset();
+        stateMachine.transitionTo(RunnerState.ACTIVE, "handshake accepted");
+        activeSessionHandler.onSessionStarted(context, candidate);
     }
 
-    private void handleHandshakeChallenge(HandshakeChallenge challenge) {
+    private void handleHandshakeChallenge(RunnerConnection candidate, HandshakeChallenge challenge) {
         byte[] nonce = challenge.getNonce().toByteArray();
-
-        System.out.println("[RUNNER] ← HANDSHAKE_CHALLENGE received");
-
-        if (nonce.length != HANDSHAKE_NONCE_LENGTH_BYTES) {
-            disconnect("invalid handshake challenge: nonce must contain 32 bytes");
-            return;
-        }
-
-        if (challenge.getExpiresAtEpochMillis() <= System.currentTimeMillis()) {
-            Arrays.fill(nonce, (byte) 0);
-            disconnect("handshake challenge expired");
-            return;
-        }
-
         byte[] hmac = null;
-
+        RunnerLog.info("HANDSHAKE_CHALLENGE received");
         try {
+            if (nonce.length != HANDSHAKE_NONCE_LENGTH_BYTES) {
+                disconnectInternal("invalid handshake challenge: expected 32-byte nonce");
+                return;
+            }
+            if (challenge.getExpiresAtEpochMillis() <= System.currentTimeMillis()) {
+                disconnectInternal("handshake challenge expired");
+                return;
+            }
             hmac = RunnerHmacSigner.signNonce(config.key(), nonce);
-
             HandshakeProof proof = HandshakeProof.newBuilder()
                     .setHmac(ByteString.copyFrom(hmac))
                     .build();
-
-            connection.send(
-                    RunnerRequest.newBuilder()
-                            .setHandshakeProof(proof)
-                            .build()
-            );
-
-            System.out.println("[RUNNER] → HANDSHAKE_PROOF sent");
+            candidate.send(RunnerRequest.newBuilder().setHandshakeProof(proof).build());
+            RunnerLog.info("HANDSHAKE_PROOF sent");
         } catch (IllegalArgumentException | IllegalStateException exception) {
-            System.out.println(
-                    "[RUNNER] ✗ Could not calculate handshake proof: "
-                            + exception.getMessage()
-            );
-            disconnect("handshake proof calculation failed");
+            RunnerLog.error("Could not calculate handshake proof", exception);
+            disconnectInternal("handshake proof calculation failed");
         } finally {
             Arrays.fill(nonce, (byte) 0);
             if (hmac != null) {
@@ -282,95 +271,75 @@ public final class RunnerLifecycle implements RunnerConnection.ConnectionListene
         }
     }
 
-
-    @Override
-    public void onError(Throwable throwable) {
-
-        synchronized (lifecycleLock) {
-
-            logStreamError(throwable);
-            disconnect("connection lost");
-        }
-    }
-
-    @Override
-    public void onCompleted() {
-
-        synchronized (lifecycleLock) {
-
-            System.out.println();
-            System.out.println("[RUNNER] ✗ Server closed the stream");
-
-            disconnect("connection lost");
-        }
-    }
-
-    public void disconnect(String reason) {
-
-        RunnerState currentState = stateMachine.getState();
-
+    /** Called with lifecycleLock held; closing a stream cannot stop a newer attempt. */
+    private void disconnectInternal(String reason) {
+        RunnerConnection old = connection;
+        connection = null;
         activeSessionHandler.onSessionStopped();
-        closeConnectionIfOpen();
-
-        if (currentState == RunnerState.DISCONNECTED) {
-            return;
+        if (old != null) {
+            try {
+                old.close();
+            } catch (RuntimeException exception) {
+                RunnerLog.error("Could not close connection", exception);
+            }
         }
-
-        stateMachine.transitionTo(RunnerState.DISCONNECTED, reason);
-        reconnectPolicy.increase();
-    }
-
-    private void closeConnectionIfOpen() {
-        if (connection != null) {
-            connection.close();
-            connection = null;
-        }
-    }
-
-    private void logStreamError(Throwable throwable) {
-
-        System.out.println();
-        System.out.println("[RUNNER] ✗ gRPC stream ERROR");
-        System.out.println(
-                "[RUNNER] Error type: "
-                        + throwable.getClass().getName()
-        );
-        System.out.println(
-                "[RUNNER] Error message: "
-                        + throwable.getMessage()
-        );
-
-        if (throwable instanceof StatusRuntimeException exception) {
-
-            Status status = exception.getStatus();
-
-            System.out.println(
-                    "[RUNNER] gRPC status: "
-                            + status.getCode()
-            );
-            System.out.println(
-                    "[RUNNER] gRPC description: "
-                            + status.getDescription()
-            );
+        if (stateMachine.getState() != RunnerState.DISCONNECTED) {
+            stateMachine.transitionTo(RunnerState.DISCONNECTED, reason);
+            if (!shutdown.get()) {
+                reconnectPolicy.increase();
+            }
+        } else if (old != null && !shutdown.get()) {
+            reconnectPolicy.increase();
         }
     }
 
     private boolean sleep(long millis) {
         long remaining = millis;
-
         while (remaining > 0 && !shutdown.get()) {
             long chunk = Math.min(remaining, 100);
-
             try {
                 Thread.sleep(chunk);
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
                 return false;
             }
-
             remaining -= chunk;
         }
-
         return !shutdown.get();
+    }
+
+    private final class AttemptListener implements RunnerConnection.ConnectionListener {
+        private final RunnerConnection source;
+
+        private AttemptListener(RunnerConnection source) {
+            this.source = source;
+        }
+
+        @Override
+        public void onResponse(ServerResponse response) {
+            handleResponse(source, response);
+        }
+
+        @Override
+        public void onError(Throwable error) {
+            synchronized (lifecycleLock) {
+                if (source == connection) {
+                    String status = error instanceof StatusRuntimeException grpcError
+                            ? " | gRPC status=" + grpcError.getStatus().getCode() : "";
+                    RunnerLog.error("gRPC stream error" + status, error);
+                    disconnectInternal("connection lost");
+                }
+            }
+        }
+
+        @Override
+        public void onCompleted() {
+            synchronized (lifecycleLock) {
+                if (source == connection) {
+                    RunnerLog.warning("Server closed the stream");
+                    disconnectInternal("connection lost");
+                }
+            }
+        }
     }
 }

@@ -1,6 +1,7 @@
 package com.maximus.runner.application.lifecycle;
 
 import com.maximus.runner.domain.RunnerState;
+import com.maximus.runner.application.port.RunnerConnection;
 
 public interface LifecycleContext {
 
@@ -8,7 +9,5 @@ public interface LifecycleContext {
 
     boolean isShutdown();
 
-    Object lifecycleLock();
-
-    void disconnect(String reason);
+    void disconnect(RunnerConnection expectedConnection, String reason);
 }

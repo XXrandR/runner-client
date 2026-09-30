@@ -1,5 +1,6 @@
 package com.maximus.runner.domain;
 
+import com.maximus.runner.infrastructure.logging.RunnerLog;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
@@ -28,7 +29,7 @@ public class RunnerStateMachine {
 
     private final List<StateTransitionListener> listeners = new ArrayList<>();
 
-    private RunnerState currentState = RunnerState.PROVISIONED;
+    private volatile RunnerState currentState = RunnerState.PROVISIONED;
 
     public RunnerState getState() {
         return currentState;
@@ -79,8 +80,8 @@ public class RunnerStateMachine {
 
         @Override
         public void onTransition(StateTransition transition) {
-            System.out.println(
-                    "[RUNNER][STATE] "
+            RunnerLog.info(
+                    "[STATE] "
                             + transition.from()
                             + " → "
                             + transition.to()

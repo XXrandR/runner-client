@@ -17,6 +17,21 @@ public record RunnerConfig(
         long fallbackHeartbeatIntervalMs
 ) {
 
+    public RunnerConfig {
+        if (serverHost == null || serverHost.isBlank() || serverPort < 1 || serverPort > 65_535) {
+            throw new IllegalArgumentException("A valid server host and port are required");
+        }
+        if (credential == null || credential.isBlank() || runnerId == null || runnerId.isBlank()) {
+            throw new IllegalArgumentException("Credential and runner ID are required");
+        }
+        if (protocolVersion <= 0 || fallbackHeartbeatIntervalMs <= 0) {
+            throw new IllegalArgumentException("Protocol version and heartbeat interval must be positive");
+        }
+        if (initialReconnectDelayMs <= 0 || maxReconnectDelayMs < initialReconnectDelayMs) {
+            throw new IllegalArgumentException("Reconnect delays must be positive and max >= initial");
+        }
+    }
+
     public static RunnerConfig defaults() {
         return new RunnerConfig(
                 "45.55.104.90",

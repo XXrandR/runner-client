@@ -2,6 +2,8 @@ package com.maximus.runner.configuration;
 
 import com.maximus.runner.configuration.secret.SecretStore;
 import com.maximus.runner.configuration.secret.SecretStores;
+import com.maximus.runner.infrastructure.logging.RunnerLog;
+import com.maximus.runner.security.RunnerHmacSigner;
 
 import java.io.Console;
 import java.util.HashMap;
@@ -23,35 +25,35 @@ public final class RunnerConfigLoader {
         RunnerConfig defaults = RunnerConfig.defaults();
         boolean interactive = !hasRequiredFromCli(options);
 
-        try (Scanner scanner = new Scanner(System.in)) {
-            String host = resolveRequired(options, "host", "Servidor (host)", interactive, scanner);
-            int port = resolveRequiredPort(options, interactive, scanner);
+        // This process does not own System.in; closing Scanner here would close it too.
+        Scanner scanner = new Scanner(System.in);
+        String host = resolveRequired(options, "host", "Servidor (host)", interactive, scanner);
+        int port = resolveRequiredPort(options, interactive, scanner);
 
-            String credential = resolveOptional(options, "credential", "Credencial", defaults.credential(), interactive, scanner);
-            String key = resolveKey(options, scanner);
-            String runnerId = resolveOptional(options, "runner-id", "Runner ID", defaults.runnerId(), interactive, scanner);
-            String runnerVersion = resolveOptional(options, "runner-version", "Versión del runner", defaults.runnerVersion(), interactive, scanner);
-            int protocolVersion = resolveOptionalInt(options, "protocol-version", "Versión de protocolo", defaults.protocolVersion(), interactive, scanner);
-            long initialReconnectDelayMs = resolveOptionalLong(
-                    options, "reconnect-initial-ms", "Backoff inicial (ms)", defaults.initialReconnectDelayMs(), interactive, scanner);
-            long maxReconnectDelayMs = resolveOptionalLong(
-                    options, "reconnect-max-ms", "Backoff máximo (ms)", defaults.maxReconnectDelayMs(), interactive, scanner);
-            long fallbackHeartbeatIntervalMs = resolveOptionalLong(
-                    options, "heartbeat-interval-ms", "Intervalo heartbeat (ms)", defaults.fallbackHeartbeatIntervalMs(), interactive, scanner);
+        String credential = resolveOptional(options, "credential", "Credencial", defaults.credential(), interactive, scanner);
+        String key = resolveKey(options, scanner);
+        String runnerId = resolveOptional(options, "runner-id", "Runner ID", defaults.runnerId(), interactive, scanner);
+        String runnerVersion = resolveOptional(options, "runner-version", "Versión del runner", defaults.runnerVersion(), interactive, scanner);
+        int protocolVersion = resolveOptionalInt(options, "protocol-version", "Versión de protocolo", defaults.protocolVersion(), interactive, scanner);
+        long initialReconnectDelayMs = resolveOptionalLong(
+                options, "reconnect-initial-ms", "Backoff inicial (ms)", defaults.initialReconnectDelayMs(), interactive, scanner);
+        long maxReconnectDelayMs = resolveOptionalLong(
+                options, "reconnect-max-ms", "Backoff máximo (ms)", defaults.maxReconnectDelayMs(), interactive, scanner);
+        long fallbackHeartbeatIntervalMs = resolveOptionalLong(
+                options, "heartbeat-interval-ms", "Intervalo heartbeat (ms)", defaults.fallbackHeartbeatIntervalMs(), interactive, scanner);
 
-            return new RunnerConfig(
-                    host,
-                    port,
-                    credential,
-                    key,
-                    runnerId,
-                    runnerVersion,
-                    protocolVersion,
-                    initialReconnectDelayMs,
-                    maxReconnectDelayMs,
-                    fallbackHeartbeatIntervalMs
-            );
-        }
+        return new RunnerConfig(
+                host,
+                port,
+                credential,
+                key,
+                runnerId,
+                runnerVersion,
+                protocolVersion,
+                initialReconnectDelayMs,
+                maxReconnectDelayMs,
+                fallbackHeartbeatIntervalMs
+        );
     }
 
     private static String resolveKey(Map<String, String> options, Scanner scanner) {
@@ -59,20 +61,22 @@ public final class RunnerConfigLoader {
         String fromCli = options.get("key");
         if (fromCli != null && !fromCli.isBlank()) {
             String key = fromCli.trim();
+            RunnerHmacSigner.validateSecretKey(key);
             store.save(key);
-            System.out.println("[RUNNER] Key HMAC guardada en el almacén del sistema");
+            RunnerLog.info("Key HMAC guardada en el almacén del sistema");
             return key;
         }
 
         Optional<String> stored = store.load();
         if (stored.isPresent()) {
-            System.out.println("[RUNNER] Key HMAC: usando almacén del sistema");
+            RunnerHmacSigner.validateSecretKey(stored.get());
+            RunnerLog.info("Key HMAC: usando almacén del sistema");
             return stored.get();
         }
 
         String key = promptSecret("Key HMAC [requerido]", scanner);
         store.save(key);
-        System.out.println("[RUNNER] Key HMAC guardada en el almacén del sistema");
+        RunnerLog.info("Key HMAC guardada en el almacén del sistema");
         return key;
     }
 
@@ -91,10 +95,12 @@ public final class RunnerConfigLoader {
             if (entered != null) {
                 java.util.Arrays.fill(entered, '\0');
             }
-            if (!input.isEmpty()) {
+            try {
+                RunnerHmacSigner.validateSecretKey(input);
                 return input;
+            } catch (IllegalArgumentException exception) {
+                System.out.println("[RUNNER] " + exception.getMessage());
             }
-            System.out.println("[RUNNER] La key HMAC es obligatoria.");
         }
     }
 

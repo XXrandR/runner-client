@@ -2,265 +2,177 @@ package com.maximus.runner.application.lifecycle;
 
 import com.maximus.runner.Command;
 import com.maximus.runner.CommandResult;
+import com.maximus.runner.CommandResultStatus;
 import com.maximus.runner.Heartbeat;
 import com.maximus.runner.HealthUpdate;
 import com.maximus.runner.RunnerRequest;
 import com.maximus.runner.RunnerStatus;
 import com.maximus.runner.ServerResponse;
 import com.maximus.runner.StatusUpdate;
+import com.maximus.runner.application.monitoring.ServerHealthMonitor;
 import com.maximus.runner.application.port.RunnerConnection;
 import com.maximus.runner.configuration.RunnerConfig;
 import com.maximus.runner.domain.RunnerState;
 import com.maximus.runner.domain.SessionContext;
-import com.maximus.runner.application.monitoring.ServerHealthMonitor;
+import com.maximus.runner.infrastructure.logging.RunnerLog;
 
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+/** Owns periodic messages and server commands while one authenticated session is active. */
 public final class SessionManager implements ActiveSessionHandler {
 
     private final RunnerConfig config;
     private final ServerHealthMonitor serverHealthMonitor;
-    private final AtomicBoolean activeSessionRunning = new AtomicBoolean(false);
-
-    private LifecycleContext lifecycleContext;
-    private RunnerConnection activeConnection;
-    private SessionContext sessionContext;
-    private Thread activeSessionThread;
+    private volatile LifecycleContext lifecycleContext;
+    private volatile ActiveSession currentSession;
 
     public SessionManager(RunnerConfig config) {
-        this.config = config;
+        this.config = Objects.requireNonNull(config, "config");
         this.serverHealthMonitor = new ServerHealthMonitor(config);
     }
 
     public void attach(LifecycleContext lifecycleContext) {
-        this.lifecycleContext = lifecycleContext;
+        this.lifecycleContext = Objects.requireNonNull(lifecycleContext, "lifecycleContext");
     }
 
     @Override
-    public void onSessionStarted(SessionContext sessionContext, RunnerConnection connection) {
-        this.sessionContext = sessionContext;
-        this.activeConnection = connection;
-        startActiveSession();
+    public void onSessionStarted(SessionContext context, RunnerConnection connection) {
+        onSessionStopped();
+        ActiveSession session = new ActiveSession(context, connection);
+        currentSession = session;
+        try {
+            sendStatusUpdate(session, RunnerStatus.READY);
+            session.thread.start();
+            RunnerLog.info("Active session started");
+        } catch (RuntimeException failure) {
+            onSessionStopped();
+            throw failure;
+        }
     }
 
     @Override
     public void onSessionStopped() {
-        stopActiveSession();
-        sessionContext = null;
-        activeConnection = null;
+        ActiveSession previous = currentSession;
+        currentSession = null;
+        if (previous != null) {
+            previous.running.set(false);
+            previous.thread.interrupt();
+        }
+        // No join here: the lifecycle may be holding its lock while stopping a session.
     }
 
     @Override
     public void onActiveResponse(ServerResponse response) {
+        ActiveSession session = currentSession;
+        if (session == null || !session.running.get()) {
+            return;
+        }
         if (response.hasHeartbeat()) {
-
-            System.out.println(
-                    "[RUNNER] ← HEARTBEAT"
-                            + " | timestamp="
-                            + response.getHeartbeat().getTimestamp()
-            );
-
+            RunnerLog.info("HEARTBEAT received | timestamp=" + response.getHeartbeat().getTimestamp());
         } else if (response.hasCommand()) {
-
-            handleCommand(response.getCommand());
-
+            handleCommand(session, response.getCommand());
         } else {
-
-            System.out.println("[RUNNER] ← Unknown response payload");
+            RunnerLog.warning("Unknown active-session response payload");
         }
     }
 
-    private void handleCommand(Command command) {
-
-        System.out.println(
-                "[RUNNER] ← COMMAND"
-                        + " | id="
-                        + command.getCommandId()
-                        + " | type="
-                        + command.getType()
-        );
-
-        sendCommandResult(
-                command.getCommandId(),
-                false,
-                "",
-                "not implemented"
-        );
+    private void handleCommand(ActiveSession session, Command command) {
+        RunnerLog.info("COMMAND received | id=" + command.getCommandId() + " | type=" + command.getType());
+        // Execution is a separate feature. Always acknowledge with an explicit failure.
+        CommandResult result = CommandResult.newBuilder()
+                .setCommandId(command.getCommandId())
+                .setSuccess(false)
+                .setStatus(CommandResultStatus.FAILED)
+                .setFinal(true)
+                .setError("not implemented")
+                .build();
+        session.connection.send(RunnerRequest.newBuilder().setCommandResult(result).build());
+        RunnerLog.info("COMMAND_RESULT sent | id=" + command.getCommandId());
     }
 
-    private void startActiveSession() {
-        stopActiveSession();
+    private void runActiveSessionLoop(ActiveSession session) {
+        long intervalMs = session.context.heartbeatIntervalSeconds() > 0
+                ? session.context.heartbeatIntervalSeconds() * 1_000L
+                : config.fallbackHeartbeatIntervalMs();
 
-        sendStatusUpdate(RunnerStatus.READY);
-
-        activeSessionRunning.set(true);
-        activeSessionThread = new Thread(
-                this::runActiveSessionLoop,
-                "runner-active-session"
-        );
-        activeSessionThread.start();
-
-        System.out.println("[RUNNER] Active session started");
-    }
-
-    private void runActiveSessionLoop() {
-        long intervalMs = resolveHeartbeatIntervalMs();
-
-        while (
-                activeSessionRunning.get()
-                        && !lifecycleContext.isShutdown()
-                        && lifecycleContext.getState() == RunnerState.ACTIVE
-        ) {
+        while (isCurrent(session)) {
             try {
-                synchronized (lifecycleContext.lifecycleLock()) {
-
-                    if (
-                            !activeSessionRunning.get()
-                                    || lifecycleContext.isShutdown()
-                                    || lifecycleContext.getState() != RunnerState.ACTIVE
-                                    || activeConnection == null
-                    ) {
-                        break;
-                    }
-
-                    sendHeartbeat();
-                    sendStatusUpdate(RunnerStatus.READY);
-                    sendHealthUpdate();
-                }
-
-                if (!sleep(intervalMs)) {
+                sendHeartbeat(session);
+                if (!isCurrent(session)) {
                     break;
                 }
-
-            } catch (Exception exception) {
-
-                System.out.println(
-                        "[RUNNER] ✗ Active session error: "
-                                + exception.getMessage()
-                );
-
-                synchronized (lifecycleContext.lifecycleLock()) {
-                    lifecycleContext.disconnect("active session error");
+                sendStatusUpdate(session, RunnerStatus.READY);
+                if (!isCurrent(session)) {
+                    break;
                 }
-
+                sendHealthUpdate(session);
+                if (!sleep(session, intervalMs)) {
+                    break;
+                }
+            } catch (RuntimeException failure) {
+                if (isCurrent(session)) {
+                    RunnerLog.error("Active session failed", failure);
+                    lifecycleContext.disconnect(session.connection, "active session error");
+                }
                 break;
             }
         }
     }
 
-    private void stopActiveSession() {
-        activeSessionRunning.set(false);
-
-        if (activeSessionThread != null) {
-            activeSessionThread.interrupt();
-
-            try {
-                activeSessionThread.join(5_000);
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-            }
-
-            activeSessionThread = null;
-        }
+    private boolean isCurrent(ActiveSession session) {
+        LifecycleContext lifecycle = lifecycleContext;
+        return lifecycle != null
+                && currentSession == session
+                && session.running.get()
+                && !lifecycle.isShutdown()
+                && lifecycle.getState() == RunnerState.ACTIVE;
     }
 
-    private long resolveHeartbeatIntervalMs() {
-        if (sessionContext != null && sessionContext.heartbeatIntervalSeconds() > 0) {
-            return sessionContext.heartbeatIntervalSeconds() * 1_000L;
-        }
-
-        return config.fallbackHeartbeatIntervalMs();
-    }
-
-    private void sendHeartbeat() {
-        long timestamp = System.currentTimeMillis();
-
-        Heartbeat heartbeat = Heartbeat.newBuilder()
-                .setTimestamp(timestamp)
-                .build();
-
-        activeConnection.send(
-                RunnerRequest.newBuilder()
-                        .setHeartbeat(heartbeat)
-                        .build()
-        );
-
-        System.out.println(
-                "[RUNNER] → HEARTBEAT sent | timestamp=" + timestamp
-        );
-    }
-
-    private void sendStatusUpdate(RunnerStatus runnerStatus) {
-        StatusUpdate statusUpdate = StatusUpdate.newBuilder()
-                .setStatus(runnerStatus)
-                .build();
-
-        activeConnection.send(
-                RunnerRequest.newBuilder()
-                        .setStatus(statusUpdate)
-                        .build()
-        );
-
-        System.out.println("[RUNNER] → STATUS sent | status=" + runnerStatus);
-    }
-
-    private void sendHealthUpdate() {
-        HealthUpdate healthUpdate = serverHealthMonitor.buildHealthUpdate(config.runnerId());
-
-        activeConnection.send(
-                RunnerRequest.newBuilder()
-                        .setHealth(healthUpdate)
-                        .build()
-        );
-
-        System.out.println("[RUNNER] → HEALTH sent");
-    }
-
-    private void sendCommandResult(
-            String commandId,
-            boolean success,
-            String payload,
-            String error
-    ) {
-        CommandResult.Builder commandResult = CommandResult.newBuilder()
-                .setCommandId(commandId)
-                .setSuccess(success);
-
-        if (!payload.isEmpty()) {
-            commandResult.setPayload(payload);
-        }
-
-        if (!error.isEmpty()) {
-            commandResult.setError(error);
-        }
-
-        activeConnection.send(
-                RunnerRequest.newBuilder()
-                        .setCommandResult(commandResult.build())
-                        .build()
-        );
-
-        System.out.println(
-                "[RUNNER] → COMMAND_RESULT sent | id=" + commandId
-        );
-    }
-
-    private boolean sleep(long millis) {
+    private boolean sleep(ActiveSession session, long millis) {
         long remaining = millis;
-
-        while (remaining > 0 && !lifecycleContext.isShutdown()) {
+        while (remaining > 0 && isCurrent(session)) {
             long chunk = Math.min(remaining, 100);
-
             try {
                 Thread.sleep(chunk);
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
                 return false;
             }
-
             remaining -= chunk;
         }
+        return isCurrent(session);
+    }
 
-        return !lifecycleContext.isShutdown();
+    private void sendHeartbeat(ActiveSession session) {
+        long timestamp = System.currentTimeMillis();
+        Heartbeat heartbeat = Heartbeat.newBuilder().setTimestamp(timestamp).build();
+        session.connection.send(RunnerRequest.newBuilder().setHeartbeat(heartbeat).build());
+        RunnerLog.info("HEARTBEAT sent | timestamp=" + timestamp);
+    }
+
+    private void sendStatusUpdate(ActiveSession session, RunnerStatus status) {
+        StatusUpdate update = StatusUpdate.newBuilder().setStatus(status).build();
+        session.connection.send(RunnerRequest.newBuilder().setStatus(update).build());
+        RunnerLog.info("STATUS sent | status=" + status);
+    }
+
+    private void sendHealthUpdate(ActiveSession session) {
+        HealthUpdate update = serverHealthMonitor.buildHealthUpdate(config.runnerId());
+        session.connection.send(RunnerRequest.newBuilder().setHealth(update).build());
+        RunnerLog.info("HEALTH sent");
+    }
+
+    private final class ActiveSession {
+        private final SessionContext context;
+        private final RunnerConnection connection;
+        private final AtomicBoolean running = new AtomicBoolean(true);
+        private final Thread thread;
+
+        private ActiveSession(SessionContext context, RunnerConnection connection) {
+            this.context = Objects.requireNonNull(context, "context");
+            this.connection = Objects.requireNonNull(connection, "connection");
+            this.thread = new Thread(() -> runActiveSessionLoop(this), "runner-active-session");
+        }
     }
 }

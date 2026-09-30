@@ -3,37 +3,24 @@ package com.maximus.runner;
 import com.maximus.runner.application.RunnerService;
 import com.maximus.runner.configuration.RunnerConfig;
 import com.maximus.runner.configuration.RunnerConfigLoader;
+import com.maximus.runner.infrastructure.logging.RunnerLog;
 
-public class RunnerApplication {
+public final class RunnerApplication {
 
-    public static void main(String[] args) throws Exception {
+    private RunnerApplication() {
+    }
 
-        System.out.println("==================================================");
-        System.out.println("[RUNNER] Configuración");
-        System.out.println("==================================================");
-
+    public static void main(String[] args) {
         RunnerConfig config = RunnerConfigLoader.load(args);
+        RunnerService runner = new RunnerService(config);
 
-        System.out.println("==================================================");
-        System.out.println("[RUNNER] Starting Runner");
-        System.out.println(
-                "[RUNNER] Target: "
-                        + config.serverHost()
-                        + ":"
-                        + config.serverPort()
-        );
-        System.out.println("==================================================");
-
-        RunnerService.initialize(config);
-
+        RunnerLog.info("Starting Runner; target=" + config.serverHost() + ":" + config.serverPort());
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            System.out.println();
-            System.out.println("[RUNNER] Shutting down...");
-            RunnerService.getInstance().shutdown();
-        }));
+            RunnerLog.info("Shutting down...");
+            runner.shutdown();
+        }, "runner-shutdown"));
 
-        RunnerService.getInstance().start();
-
-        System.out.println("[RUNNER] Runner stopped");
+        runner.start();
+        RunnerLog.info("Runner stopped");
     }
 }

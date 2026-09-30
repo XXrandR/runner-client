@@ -4,9 +4,12 @@ public final class ReconnectPolicy {
 
     private final long initialDelayMs;
     private final long maxDelayMs;
-    private long currentDelayMs;
+    private volatile long currentDelayMs;
 
     public ReconnectPolicy(long initialDelayMs, long maxDelayMs) {
+        if (initialDelayMs <= 0 || maxDelayMs < initialDelayMs) {
+            throw new IllegalArgumentException("Reconnect delays must be positive and max >= initial");
+        }
         this.initialDelayMs = initialDelayMs;
         this.maxDelayMs = maxDelayMs;
         this.currentDelayMs = initialDelayMs;
@@ -17,7 +20,10 @@ public final class ReconnectPolicy {
     }
 
     public void increase() {
-        currentDelayMs = Math.min(currentDelayMs * 2, maxDelayMs);
+        // Subtraction also avoids overflow when the delay is very large.
+        currentDelayMs = currentDelayMs >= maxDelayMs - currentDelayMs
+                ? maxDelayMs
+                : currentDelayMs * 2;
     }
 
     public void reset() {

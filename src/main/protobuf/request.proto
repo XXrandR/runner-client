@@ -7,9 +7,8 @@ option java_package = "com.maximus.runner";
 
 message AuthenticateRequest {
   string credential = 1;
-
-  // Campos retirados del antiguo HMAC de autenticación.
-  // El único HMAC ahora pertenece al handshake.
+  // Campos eliminados del antiguo HMAC de autenticación.
+  // El único HMAC ahora pertenece a HandshakeProof.
   reserved 2, 3;
   reserved "hmac", "timestamp_epoch_ms";
 }
@@ -20,7 +19,6 @@ message HandshakeRequest {
   int32 protocol_version = 3;
 }
 
-// Response to the server challenge. The shared secret is never transmitted.
 message HandshakeProof {
   bytes hmac = 1;
 }
@@ -65,7 +63,6 @@ message HealthStatus {
     // Examples:
     // Linux
     // Windows Server
-    // Windows
     string operating_system = 2;
 
     // Operating system version.
@@ -344,9 +341,3 @@ message HealthStatus {
   }
 }
 
-message CommandResult {
-  string command_id = 1;
-  bool success = 2;
-  string payload = 3;
-  string error = 4;
-}

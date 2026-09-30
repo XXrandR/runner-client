@@ -1,0 +1,760 @@
+syntax = "proto3";
+
+package maximus.runner.commands;
+
+option java_multiple_files = true;
+option java_package = "com.maximus.runner";
+
+import "google/protobuf/any.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+// ============================================================================
+// COMMAND
+// ============================================================================
+//
+// A Command is an asynchronous instruction sent SERVER -> RUNNER.
+//
+// The existing fields remain stable:
+//   command_id = 1
+//   type       = 2
+//   payload    = 3
+//
+// New typed fields provide a structured protocol while payload remains
+// available for backward compatibility and vendor/application-specific data.
+//
+// A command may be:
+//
+//   API request
+//   database operation
+//   file operation / file transfer
+//   command cancellation
+//   generic extension
+//
+// Commands are never required to block the Connect() stream. A runner may
+// accept a command, execute it asynchronously, and emit one or more
+// CommandResult messages correlated through command_id.
+//
+// ============================================================================
+
+message Command {
+
+  // Globally unique identifier of this command.
+  string command_id = 1;
+
+  // Logical command type.
+  //
+  // Recommended values:
+  //
+  //   api.request
+  //   database.execute
+  //   database.query
+  //   database.procedure
+  //   database.transaction
+  //   database.metadata
+  //   database.stream
+  //   file.list
+  //   file.stat
+  //   file.read
+  //   file.write
+  //   file.delete
+  //   file.copy
+  //   file.move
+  //   file.mkdir
+  //   file.download
+  //   file.upload
+  //   command.cancel
+  //   command.ping
+  //   custom
+  //
+  // String is intentionally preserved for forward compatibility.
+  string type = 2;
+
+  // Legacy / generic payload.
+  //
+  // Recommended encoding:
+  //   application/json
+  //
+  // This field can contain application-specific data when a typed body is
+  // not available or when compatibility with older runners is required.
+  string payload = 3;
+
+  // Optional correlation identifier.
+  //
+  // Useful when several commands belong to one higher-level operation.
+  string correlation_id = 4;
+
+  // Protocol/schema version of the command body.
+  uint32 version = 5;
+
+  // Maximum execution time requested by the sender.
+  //
+  // This is an execution deadline, not a transport timeout.
+  google.protobuf.Duration timeout = 6;
+
+  // Scheduling priority.
+  CommandPriority priority = 7;
+
+  // Arbitrary command metadata.
+  map<string, string> metadata = 8;
+
+  // If true, the runner may return multiple CommandResult messages.
+  bool streaming = 9;
+
+  // True when the sender expects a final CommandResult.
+  bool expects_result = 10;
+
+  // Optional MIME/content type for payload data.
+  //
+  // Examples:
+  //   application/json
+  //   application/octet-stream
+  //   text/plain
+  //   application/sql
+  string content_type = 11;
+
+  // Structured command body.
+  oneof body {
+
+    ApiRequest api = 20;
+
+    DatabaseRequest database = 21;
+
+    FileRequest file = 22;
+
+    CancelCommand cancel = 23;
+
+    GenericCommand generic = 24;
+  }
+}
+
+// ============================================================================
+// COMMAND RESULT
+// ============================================================================
+//
+// A CommandResult is an asynchronous response emitted RUNNER -> SERVER.
+//
+// A command can produce:
+//
+//   1. one final result
+//   2. many intermediate results followed by a final result
+//   3. a sequence of binary chunks for file transfer
+//   4. a streaming API/database response
+//
+// sequence + final make the result safe for streaming protocols.
+//
+// ============================================================================
+
+message CommandResult {
+
+  // Identifier of the originating Command.
+  string command_id = 1;
+
+  // True when the operation completed successfully.
+  bool success = 2;
+
+  // Legacy / generic result payload.
+  //
+  // Recommended encoding:
+  //   application/json
+  string payload = 3;
+
+  // Human-readable or machine-readable error information.
+  string error = 4;
+
+  // Current execution state.
+  CommandResultStatus status = 5;
+
+  // Monotonically increasing sequence number for streaming results.
+  //
+  // First message should normally be 0 or 1 and subsequent messages
+  // increment by one.
+  uint64 sequence = 6;
+
+  // Indicates that this is the last result for the command.
+  bool final = 7;
+
+  // Optional MIME/content type.
+  string content_type = 8;
+
+  // Binary result data.
+  //
+  // Primarily used for file transfer and binary API/database results.
+  bytes data = 9;
+
+  // Arbitrary response metadata.
+  map<string, string> metadata = 10;
+
+  // Optional structured response body.
+  oneof body {
+
+    ApiResponse api = 20;
+
+    DatabaseResponse database = 21;
+
+    FileTransferChunk file_chunk = 22;
+
+    GenericResponse generic = 23;
+  }
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum CommandPriority {
+  COMMAND_PRIORITY_UNSPECIFIED = 0;
+
+  // Background work. May be delayed by the runner.
+  LOW = 1;
+
+  // Normal operational traffic.
+  NORMAL = 2;
+
+  // Important operational traffic.
+  HIGH = 3;
+
+  // Reserved for operational/control commands.
+  CRITICAL = 4;
+}
+
+enum CommandResultStatus {
+  COMMAND_RESULT_STATUS_UNSPECIFIED = 0;
+
+  // Command was accepted but execution has not started.
+  ACCEPTED = 1;
+
+  // Command is actively executing.
+  RUNNING = 2;
+
+  // Result represents an intermediate streaming item.
+  STREAMING = 3;
+
+  // Command completed successfully.
+  SUCCEEDED = 4;
+
+  // Command failed.
+  FAILED = 5;
+
+  // Command was cancelled.
+  CANCELLED = 6;
+
+  // Command exceeded its execution deadline.
+  TIMED_OUT = 7;
+
+  // Runner rejected the command before execution.
+  REJECTED = 8;
+}
+
+// ============================================================================
+// API
+// ============================================================================
+//
+// Generic HTTP/API abstraction.
+//
+// The runner is not coupled to a particular HTTP framework or REST client.
+//
+// ============================================================================
+
+message ApiRequest {
+
+  // HTTP method or logical API method.
+  //
+  // Typical values:
+  //   GET
+  //   POST
+  //   PUT
+  //   PATCH
+  //   DELETE
+  //   HEAD
+  //   OPTIONS
+  //   CONNECT
+  string method = 1;
+
+  // Absolute URL or runner-resolvable target.
+  string url = 2;
+
+  // HTTP headers.
+  map<string, string> headers = 3;
+
+  // Query-string parameters.
+  repeated KeyValue query = 4;
+
+  // Optional request body.
+  bytes body = 5;
+
+  // MIME type of body.
+  string content_type = 6;
+
+  // Optional logical API timeout.
+  google.protobuf.Duration timeout = 7;
+
+  // Optional TLS behavior.
+  ApiTlsOptions tls = 8;
+
+  // Whether redirects may be followed.
+  bool follow_redirects = 9;
+
+  // Optional maximum response size.
+  uint64 max_response_bytes = 10;
+
+  // Enables streaming response delivery.
+  bool stream_response = 11;
+}
+
+message ApiResponse {
+
+  // HTTP status code, if applicable.
+  int32 status_code = 1;
+
+  // Response headers.
+  map<string, string> headers = 2;
+
+  // Body when the response is not streamed.
+  bytes body = 3;
+
+  // MIME/content type reported by the API.
+  string content_type = 4;
+
+  // Response size.
+  uint64 body_size = 5;
+
+  // True when the response has a body.
+  bool has_body = 6;
+}
+
+message ApiTlsOptions {
+
+  // Whether certificate validation is enabled.
+  bool verify_certificate = 1;
+
+  // Whether hostname validation is enabled.
+  bool verify_hostname = 2;
+
+  // Optional logical client certificate identifier.
+  string client_certificate_id = 3;
+}
+
+// ============================================================================
+// DATABASE
+// ============================================================================
+//
+// Database operations are deliberately generic.
+//
+// This model supports:
+//
+//   relational SQL
+//   stored procedures
+//   transactions
+//   document databases
+//   key/value databases
+//   metadata discovery
+//   streaming result sets
+//   binary parameters/results
+//
+// database_type identifies the backend while operation determines semantics.
+//
+// Examples:
+//
+//   sqlserver
+//   postgresql
+//   mysql
+//   oracle
+//   sqlite
+//   mongodb
+//   redis
+//   cassandra
+//   elasticsearch
+//   custom
+//
+// ============================================================================
+
+message DatabaseRequest {
+
+  // Logical database backend.
+  string database_type = 1;
+
+  // Connection or logical datasource identifier.
+  //
+  // Credentials should never be embedded here.
+  // The runner should resolve them from its secure configuration.
+  string datasource = 2;
+
+  DatabaseOperation operation = 3;
+
+  // SQL statement, procedure name, command document, or backend-specific
+  // operation depending on database_type and operation.
+  string statement = 4;
+
+  // Named or positional parameters.
+  repeated DatabaseParameter parameters = 5;
+
+  // Optional target database/schema/catalog.
+  string catalog = 6;
+  string schema = 7;
+
+  // Maximum number of returned rows/documents/items.
+  uint64 max_rows = 8;
+
+  // Maximum number of bytes returned.
+  uint64 max_result_bytes = 9;
+
+  // Maximum execution duration.
+  google.protobuf.Duration timeout = 10;
+
+  // Whether the result should be streamed.
+  bool stream_results = 11;
+
+  // Transaction behavior.
+  DatabaseTransaction transaction = 12;
+
+  // Backend-specific options.
+  google.protobuf.Struct options = 13;
+}
+
+enum DatabaseOperation {
+  DATABASE_OPERATION_UNSPECIFIED = 0;
+
+  // Execute a statement without requiring a result set.
+  EXECUTE = 1;
+
+  // Execute a query and return rows/documents/items.
+  QUERY = 2;
+
+  // Execute a stored procedure or equivalent.
+  PROCEDURE = 3;
+
+  // Begin a transaction.
+  BEGIN_TRANSACTION = 4;
+
+  // Commit a transaction.
+  COMMIT_TRANSACTION = 5;
+
+  // Roll back a transaction.
+  ROLLBACK_TRANSACTION = 6;
+
+  // Read database metadata/schema information.
+  METADATA = 7;
+
+  // Driver-specific streaming operation.
+  STREAM = 8;
+
+  // Backend-specific custom operation.
+  CUSTOM = 9;
+}
+
+message DatabaseTransaction {
+
+  // Existing transaction identifier.
+  //
+  // The runner owns the actual transaction object/session.
+  string transaction_id = 1;
+
+  // Isolation level requested by the caller.
+  string isolation_level = 2;
+
+  // Whether automatic commit is enabled.
+  bool auto_commit = 3;
+}
+
+message DatabaseParameter {
+
+  // Parameter name.
+  string name = 1;
+
+  // Backend-specific database type.
+  //
+  // Examples:
+  //   varchar
+  //   nvarchar
+  //   int
+  //   bigint
+  //   decimal
+  //   datetime
+  //   uuid
+  //   json
+  //   blob
+  string database_type = 2;
+
+  // Position for positional parameter systems.
+  int32 position = 3;
+
+  // Whether NULL should be sent.
+  bool is_null = 4;
+
+  oneof value {
+
+    string string_value = 10;
+
+    int64 int64_value = 11;
+
+    uint64 uint64_value = 12;
+
+    double double_value = 13;
+
+    bool bool_value = 14;
+
+    bytes bytes_value = 15;
+
+    google.protobuf.Timestamp timestamp_value = 16;
+
+    google.protobuf.Struct object_value = 17;
+
+    google.protobuf.ListValue array_value = 18;
+  }
+}
+
+message DatabaseResponse {
+
+  // Number of rows/documents/items affected.
+  int64 affected_rows = 1;
+
+  // Result-set metadata.
+  repeated DatabaseColumn columns = 2;
+
+  // Returned records.
+  //
+  // Each record is represented as a structured object.
+  repeated google.protobuf.Struct rows = 3;
+
+  // Optional scalar value for operations that return one value.
+  google.protobuf.Value scalar = 4;
+
+  // Database-generated identifier, when applicable.
+  string generated_id = 5;
+
+  // Whether more result data exists.
+  bool has_more = 6;
+
+  // Backend-specific response metadata.
+  google.protobuf.Struct metadata = 7;
+}
+
+message DatabaseColumn {
+
+  string name = 1;
+
+  // Database-native type name.
+  string database_type = 2;
+
+  // Whether NULL is permitted.
+  bool nullable = 3;
+
+  // Backend-specific precision.
+  int32 precision = 4;
+
+  // Backend-specific scale.
+  int32 scale = 5;
+}
+
+// ============================================================================
+// FILE SYSTEM / FILE TRANSFER
+// ============================================================================
+//
+// File operations are asynchronous and stream-safe.
+//
+// Large files MUST NOT be placed entirely inside Command.payload.
+//
+// File transfer uses:
+//
+//   FileRequest
+//       +
+//   FileTransferChunk
+//
+// A file transfer is identified by transfer_id.
+//
+// This permits retry, resume, checksumming and chunked streaming.
+// ============================================================================
+
+message FileRequest {
+
+  FileOperation operation = 1;
+
+  // Logical path on the runner.
+  string path = 2;
+
+  // Optional second path for COPY/MOVE.
+  string destination = 3;
+
+  // Transfer identifier.
+  //
+  // Required for upload/download operations.
+  string transfer_id = 4;
+
+  // Maximum chunk size requested by the sender.
+  uint64 chunk_size = 5;
+
+  // Byte offset at which transfer should begin.
+  uint64 offset = 6;
+
+  // Expected total size.
+  uint64 total_size = 7;
+
+  // SHA-256 of the complete file, when known.
+  string sha256 = 8;
+
+  // SHA-256 of an expected chunk, when applicable.
+  string chunk_sha256 = 9;
+
+  // Whether an existing partial transfer may be resumed.
+  bool resumable = 10;
+
+  // Whether the operation should overwrite an existing destination.
+  bool overwrite = 11;
+
+  // Optional file permissions in platform-independent form.
+  uint32 permissions = 12;
+
+  // Whether recursive operation is allowed.
+  bool recursive = 13;
+}
+
+enum FileOperation {
+  FILE_OPERATION_UNSPECIFIED = 0;
+
+  // Enumerate files/directories.
+  LIST = 1;
+
+  // Retrieve file metadata.
+  STAT = 2;
+
+  // Read file contents.
+  READ = 3;
+
+  // Write/create file contents.
+  WRITE = 4;
+
+  // Delete file/directory.
+  DELETE = 5;
+
+  // Copy file/directory.
+  COPY = 6;
+
+  // Move/rename file/directory.
+  MOVE = 7;
+
+  // Create a directory.
+  MKDIR = 8;
+
+  // Download runner -> server.
+  DOWNLOAD = 9;
+
+  // Upload server -> runner.
+  UPLOAD = 10;
+}
+
+message FileTransferChunk {
+
+  // Transfer identifier.
+  string transfer_id = 1;
+
+  // Byte offset of this chunk in the complete file.
+  uint64 offset = 2;
+
+  // Chunk sequence number.
+  uint64 sequence = 3;
+
+  // Raw binary data.
+  bytes data = 4;
+
+  // Number of bytes contained in data.
+  uint64 size = 5;
+
+  // SHA-256 of this chunk.
+  string sha256 = 6;
+
+  // Total file size, if known.
+  uint64 total_size = 7;
+
+  // True when this is the final chunk.
+  bool final = 8;
+
+  // SHA-256 of the complete file when final == true.
+  string file_sha256 = 9;
+}
+
+// ============================================================================
+// FILE METADATA
+// ============================================================================
+
+message FileInfo {
+
+  string path = 1;
+
+  string name = 2;
+
+  FileType type = 3;
+
+  uint64 size = 4;
+
+  google.protobuf.Timestamp created_at = 5;
+
+  google.protobuf.Timestamp modified_at = 6;
+
+  google.protobuf.Timestamp accessed_at = 7;
+
+  string sha256 = 8;
+
+  uint32 permissions = 9;
+
+  bool readable = 10;
+
+  bool writable = 11;
+
+  bool executable = 12;
+}
+
+enum FileType {
+  FILE_TYPE_UNSPECIFIED = 0;
+  FILE = 1;
+  DIRECTORY = 2;
+  SYMBOLIC_LINK = 3;
+  OTHER = 4;
+}
+
+// ============================================================================
+// CONTROL
+// ============================================================================
+
+message CancelCommand {
+
+  // Command being cancelled.
+  string target_command_id = 1;
+
+  // Optional reason.
+  string reason = 2;
+
+  // If true, cancellation should propagate to child operations.
+  bool cascade = 3;
+}
+
+message GenericCommand {
+
+  // Application-defined command name.
+  string name = 1;
+
+  // Structured arbitrary arguments.
+  google.protobuf.Struct arguments = 2;
+
+  // Optional binary payload.
+  bytes data = 3;
+}
+
+message GenericResponse {
+
+  // Application-defined result.
+  google.protobuf.Struct result = 1;
+
+  // Optional binary result.
+  bytes data = 2;
+}
+
+// ============================================================================
+// COMMON TYPES
+// ============================================================================
+
+message KeyValue {
+  string key = 1;
+  string value = 2;
+}

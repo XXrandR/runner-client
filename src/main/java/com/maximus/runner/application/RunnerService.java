@@ -3,41 +3,20 @@ package com.maximus.runner.application;
 import com.maximus.runner.application.lifecycle.RunnerLifecycle;
 import com.maximus.runner.application.lifecycle.SessionManager;
 import com.maximus.runner.configuration.RunnerConfig;
+import com.maximus.runner.infrastructure.grpc.GrpcSession;
 
+import java.util.Objects;
+
+/** Builds and owns one runner lifecycle. No global mutable singleton is needed. */
 public final class RunnerService {
-
-    private static volatile RunnerService instance;
-    private static final Object INSTANCE_LOCK = new Object();
 
     private final RunnerLifecycle lifecycle;
 
-    private RunnerService(RunnerConfig config) {
+    public RunnerService(RunnerConfig config) {
+        Objects.requireNonNull(config, "config");
         SessionManager sessionManager = new SessionManager(config);
-        this.lifecycle = new RunnerLifecycle(config, sessionManager);
+        this.lifecycle = new RunnerLifecycle(config, sessionManager, () -> new GrpcSession(config));
         sessionManager.attach(lifecycle);
-    }
-
-    public static void initialize(RunnerConfig config) {
-        if (instance != null) {
-            throw new IllegalStateException("RunnerService already initialized");
-        }
-
-        synchronized (INSTANCE_LOCK) {
-            if (instance != null) {
-                throw new IllegalStateException("RunnerService already initialized");
-            }
-            instance = new RunnerService(config);
-        }
-    }
-
-    public static RunnerService getInstance() {
-        RunnerService current = instance;
-        if (current == null) {
-            throw new IllegalStateException(
-                    "RunnerService not initialized. Call initialize(config) first."
-            );
-        }
-        return current;
     }
 
     public void start() {

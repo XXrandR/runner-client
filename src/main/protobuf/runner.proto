@@ -8,6 +8,7 @@ option java_outer_classname = "RunnerProto";
 
 import "request.proto";
 import "response.proto";
+import "commands.proto";
 
 // ============================================================================
 // RUNNER SERVICE
@@ -56,7 +57,7 @@ message RunnerRequest {
     Heartbeat heartbeat = 3;
     StatusUpdate status = 4;
     HealthUpdate health = 5;
-    CommandResult command_result = 6;
+    .maximus.runner.commands.CommandResult command_result = 6;
     HandshakeProof handshake_proof = 7;
   }
 }
@@ -72,7 +73,7 @@ message ServerResponse {
     AuthenticationResponse authentication = 1;
     HandshakeResponse handshake = 2;
     Heartbeat heartbeat = 3;
-    Command command = 4;
+    .maximus.runner.commands.Command command = 4;
     HandshakeChallenge handshake_challenge = 5;
   }
 }
