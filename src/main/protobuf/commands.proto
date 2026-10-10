@@ -45,7 +45,7 @@ message Command {
 
   // Logical command type.
   //
-  // Recommended values:
+  // Historical logical values. Actual availability is returned by runner.capabilities.
   //
   //   api.request
   //   database.execute
@@ -67,6 +67,8 @@ message Command {
   //   command.cancel
   //   command.ping
   //   custom
+  // Added implemented families: ssh.exec, sftp.*, mail.*, messaging.*, event.*, process.exec.
+  // database.transaction and database.metadata remain unsupported in this implementation.
   //
   // String is intentionally preserved for forward compatibility.
   string type = 2;
@@ -126,6 +128,12 @@ message Command {
     CancelCommand cancel = 23;
 
     GenericCommand generic = 24;
+    SshRequest ssh = 25;
+    SftpRequest sftp = 26;
+    MailRequest mail = 27;
+    MessagingRequest messaging = 28;
+    EventRequest event = 29;
+    ProcessRequest process = 30;
   }
 }
 
@@ -196,6 +204,12 @@ message CommandResult {
     FileTransferChunk file_chunk = 22;
 
     GenericResponse generic = 23;
+    SshResponse ssh = 24;
+    SftpResponse sftp = 25;
+    MailResponse mail = 26;
+    MessagingResponse messaging = 27;
+    EventResponse event = 28;
+    ProcessResponse process = 29;
   }
 }
 
@@ -301,6 +315,7 @@ message ApiRequest {
 
   // Enables streaming response delivery.
   bool stream_response = 11;
+  string connection_id = 12;
 }
 
 message ApiResponse {
@@ -608,6 +623,7 @@ message FileRequest {
 
   // Whether recursive operation is allowed.
   bool recursive = 13;
+  bytes data = 14; // bounded server-to-runner write/upload chunk
 }
 
 enum FileOperation {
@@ -757,4 +773,113 @@ message GenericResponse {
 message KeyValue {
   string key = 1;
   string value = 2;
+}
+
+// Extension families. Existing field numbers and protobuf packages are retained.
+message SshRequest {
+  string connection_id = 1;
+  string command = 2;
+  string stdin = 3;
+  uint64 max_output_bytes = 4;
+}
+message SshResponse {
+  int32 exit_code = 1;
+  bytes stdout = 2;
+  bytes stderr = 3;
+}
+message SftpRequest {
+  string connection_id = 1;
+  string operation = 2; // list, stat, get, put, mkdir, rename, delete
+  string remote_path = 3;
+  string local_path = 4;
+  string destination = 5;
+  bool overwrite = 6;
+}
+message SftpResponse {
+  repeated FileInfo files = 1;
+  uint64 transferred_bytes = 2;
+  string local_path = 3;
+  string remote_path = 4;
+}
+message MailRequest {
+  string connection_id = 1;
+  string operation = 2; // send, list, read
+  string from = 3;
+  repeated string to = 4;
+  repeated string cc = 5;
+  repeated string bcc = 6;
+  string subject = 7;
+  string text = 8;
+  string html = 9;
+  repeated string attachments = 10; // paths under runner workspace
+  string folder = 11;
+  uint32 limit = 12;
+  string message_id = 13; // IMAP UID for read
+  bool unread_only = 14;
+}
+message MailItem {
+  string message_id = 1;
+  string subject = 2;
+  repeated string from = 3;
+  repeated string to = 4;
+  string text = 5;
+  bool seen = 6;
+  google.protobuf.Timestamp received_at = 7;
+}
+message MailResponse {
+  string sent_message_id = 1;
+  repeated MailItem messages = 2;
+}
+message MessagingRequest {
+  string connection_id = 1;
+  string operation = 2; // publish, receive
+  string topic = 3; // topic for MQTT/Kafka; queue for RabbitMQ receive
+  string exchange = 4;
+  string routing_key = 5;
+  bytes data = 6;
+  map<string, string> headers = 7;
+  string key = 8;
+  uint32 qos = 9;
+  bool retained = 10;
+  uint32 max_messages = 11;
+  google.protobuf.Duration wait_timeout = 12;
+  bool acknowledge = 13;
+}
+message MessagingItem {
+  string topic = 1;
+  string key = 2;
+  bytes data = 3;
+  map<string, string> headers = 4;
+  string message_id = 5;
+}
+message MessagingResponse {
+  repeated MessagingItem messages = 1;
+  uint32 count = 2;
+}
+message EventRequest {
+  string operation = 1; // emit, timer, watch_files
+  string topic = 2;
+  google.protobuf.Struct data = 3;
+  string path = 4;
+  google.protobuf.Duration interval = 5;
+  uint32 max_events = 6;
+}
+message EventResponse {
+  string event_id = 1;
+  string topic = 2;
+  string source = 3;
+  google.protobuf.Struct data = 4;
+  google.protobuf.Timestamp occurred_at = 5;
+}
+message ProcessRequest {
+  string connection_id = 1; // configured executable profile
+  repeated string arguments = 2;
+  string working_directory = 3;
+  bytes stdin = 4;
+  uint64 max_output_bytes = 5;
+}
+message ProcessResponse {
+  int32 exit_code = 1;
+  bytes stdout = 2;
+  bytes stderr = 3;
 }

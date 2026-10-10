@@ -15,6 +15,9 @@ import com.maximus.runner.configuration.RunnerConfig;
 import com.maximus.runner.domain.RunnerState;
 import com.maximus.runner.domain.SessionContext;
 import com.maximus.runner.infrastructure.logging.RunnerLog;
+import com.maximus.runner.application.command.CommandEngine;
+import com.maximus.runner.configuration.connectors.ConnectorConfig;
+import com.maximus.runner.infrastructure.connectors.ConnectorRegistry;
 
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -24,12 +27,14 @@ public final class SessionManager implements ActiveSessionHandler {
 
     private final RunnerConfig config;
     private final ServerHealthMonitor serverHealthMonitor;
+    private final ConnectorConfig connectorConfig;
     private volatile LifecycleContext lifecycleContext;
     private volatile ActiveSession currentSession;
 
     public SessionManager(RunnerConfig config) {
         this.config = Objects.requireNonNull(config, "config");
         this.serverHealthMonitor = new ServerHealthMonitor(config);
+        this.connectorConfig = ConnectorConfig.load();
     }
 
     public void attach(LifecycleContext lifecycleContext) {
@@ -58,6 +63,7 @@ public final class SessionManager implements ActiveSessionHandler {
         if (previous != null) {
             previous.running.set(false);
             previous.thread.interrupt();
+            previous.commands.close();
         }
         // No join here: the lifecycle may be holding its lock while stopping a session.
     }
@@ -79,16 +85,15 @@ public final class SessionManager implements ActiveSessionHandler {
 
     private void handleCommand(ActiveSession session, Command command) {
         RunnerLog.info("COMMAND received | id=" + command.getCommandId() + " | type=" + command.getType());
-        // Execution is a separate feature. Always acknowledge with an explicit failure.
-        CommandResult result = CommandResult.newBuilder()
-                .setCommandId(command.getCommandId())
-                .setSuccess(false)
-                .setStatus(CommandResultStatus.FAILED)
-                .setFinal(true)
-                .setError("not implemented")
-                .build();
-        session.connection.send(RunnerRequest.newBuilder().setCommandResult(result).build());
-        RunnerLog.info("COMMAND_RESULT sent | id=" + command.getCommandId());
+        if (command.getCommandId().isBlank()) {
+            RunnerLog.warning("Command without command_id was ignored"); return;
+        }
+        session.commands.submit(command, result -> {
+            if (currentSession == session && session.running.get()) {
+                session.connection.send(RunnerRequest.newBuilder().setCommandResult(result).build());
+                RunnerLog.info("COMMAND_RESULT sent | id=" + result.getCommandId() + " | status=" + result.getStatus());
+            }
+        });
     }
 
     private void runActiveSessionLoop(ActiveSession session) {
@@ -168,10 +173,12 @@ public final class SessionManager implements ActiveSessionHandler {
         private final RunnerConnection connection;
         private final AtomicBoolean running = new AtomicBoolean(true);
         private final Thread thread;
+        private final CommandEngine commands;
 
         private ActiveSession(SessionContext context, RunnerConnection connection) {
             this.context = Objects.requireNonNull(context, "context");
             this.connection = Objects.requireNonNull(connection, "connection");
+            this.commands = new CommandEngine(ConnectorRegistry.create(connectorConfig), connectorConfig);
             this.thread = new Thread(() -> runActiveSessionLoop(this), "runner-active-session");
         }
     }
